@@ -1,0 +1,6 @@
+{
+  "name": "Gadget Deal Tracker DB Studio",
+  "description": "An interactive PostgreSQL schema explorer, normalization analyzer, ERD visualizer, SQL playground, and architect interview suite for the E-Commerce Gadget Deal Tracker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
