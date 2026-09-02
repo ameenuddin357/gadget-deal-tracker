@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+coverage/
+
+# OS / logs
+.DS_Store
+*.log
+
+# Environment files
+.env*
+!.env.example
+
+# Local runtime data
+backend/data/
+
+# Package managers not used
+bun.lock
+
+# Local development / debugging scripts
+audit*.ts
+alter_alerts.ts
+check_constraints.ts
+fix_categories.ts
+fix_prices.ts
+list-tables.js
+patch_validation.cjs
+query.js
+rewrite*.js
+schema_check.ts
+seed.js
+
+test-*.js
+test_*.js
+test_*.ts
+test_*.cjs
+
+backend/check_*
+backend/fix_db.ts
+backend/patch_*
+backend/test_*
+backend/trigger_sync.ts
