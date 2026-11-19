@@ -4,16 +4,25 @@ import { AppError } from '../middleware/errorHandler.ts';
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const productsCount = await db.query('SELECT COUNT(*) FROM products');
+    const userId = req.user?.userId;
+    const productsCount = await db.query('SELECT COUNT(*) FROM products WHERE is_active = TRUE');
     const retailersCount = await db.query('SELECT COUNT(*) FROM stores');
-    const alertsCount = await db.query('SELECT COUNT(*) FROM price_alerts WHERE is_active = TRUE');
+    
+    let activeAlertsCount = 0;
+    if (userId) {
+      const alertsCount = await db.query(
+        'SELECT COUNT(*) FROM price_alerts WHERE user_id = $1 AND is_active = TRUE',
+        [userId]
+      );
+      activeAlertsCount = parseInt(alertsCount.rows[0].count, 10) || 0;
+    }
 
     res.status(200).json({
       status: 'success',
       data: {
-        totalProducts: parseInt(productsCount.rows[0].count),
-        totalRetailers: parseInt(retailersCount.rows[0].count),
-        activeAlerts: parseInt(alertsCount.rows[0].count)
+        totalProducts: parseInt(productsCount.rows[0].count, 10),
+        totalRetailers: parseInt(retailersCount.rows[0].count, 10),
+        activeAlerts: activeAlertsCount
       }
     });
   } catch (error) {
@@ -40,6 +49,7 @@ export const getBestDeals = async (req: Request, res: Response, next: NextFuncti
         ORDER BY product_id, price ASC
       ) pp ON p.product_id = pp.product_id
       JOIN stores s ON pp.store_id = s.store_id
+      WHERE p.is_active = TRUE
       ORDER BY discount_percentage DESC
       LIMIT 8;
     `;
@@ -78,7 +88,7 @@ export const getPriceDrops = async (req: Request, res: Response, next: NextFunct
         FROM price_history
         GROUP BY product_id
       ) hist_p ON p.product_id = hist_p.product_id
-      WHERE hist_p.highest_price > curr_p.price
+      WHERE hist_p.highest_price > curr_p.price AND p.is_active = TRUE
       ORDER BY drop_percentage DESC
       LIMIT 6;
     `;

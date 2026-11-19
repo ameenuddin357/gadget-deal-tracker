@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { AppError } from './errorHandler.ts';
 import db from '../config/db.ts';
+import { isEmailVerificationEnabled } from '../controllers/authController.ts';
 
 // Extend the Express Request type declaration to support custom 'user' fields
 declare global {
@@ -44,7 +45,7 @@ export const protect = async (
     }
 
     // Decode and verify token signature authenticity
-    const jwtSecret = process.env.JWT_SECRET || 'your_jwt_signing_token_key_change_me_in_production';
+    const jwtSecret = process.env.JWT_SECRET;
     
     if (!jwtSecret) {
       return next(new AppError('Server configuration error: JWT_SECRET is required.', 500));
@@ -57,14 +58,18 @@ export const protect = async (
       role: string;
     };
 
-    // VERIFY USER STILL EXISTS IN DATABASE
+    // VERIFY USER STILL EXISTS IN DATABASE AND IS VERIFIED
     const userRes = await db.query(
-      'SELECT user_id, username, email, role FROM users WHERE user_id = $1',
+      'SELECT user_id, username, email, role, is_verified FROM users WHERE user_id = $1',
       [decoded.userId]
     );
 
     if (userRes.rows.length === 0) {
       return next(new AppError('The user belonging to this token no longer exists.', 401));
+    }
+
+    if (isEmailVerificationEnabled() && userRes.rows[0].is_verified !== true) {
+      return next(new AppError('Please verify your email before accessing this resource.', 403));
     }
 
     // Attach verified user account data to current Express Request execution thread

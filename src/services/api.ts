@@ -1,5 +1,11 @@
 import axios from 'axios';
-import { Product, StorePricing, WatchlistEntry, PriceAlert, User } from '../types/frontend';
+import { 
+  Product, StorePricing, WatchlistEntry, PriceAlert, User, AdminReport,
+  AdminProduct, AdminPagination, AdminProductListResponse, AdminCategory, AdminStore,
+  CreateAdminProductPayload, UpdateAdminProductPayload,
+  AdminProductOffersResponse, AdminRetailerOffer, CreateAdminOfferPayload, UpdateAdminOfferPayload,
+  AdminSyncStatusData
+} from '../types/frontend';
 
 const API_BASE_URL = '/api';
 
@@ -18,7 +24,19 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
   res => res,
-  err => {
+  async err => {
+    const config = err.config;
+    if (
+      config &&
+      (config.method === 'get' || !config.method) &&
+      !config._retry &&
+      (err.response?.status === 503 || !err.response)
+    ) {
+      config._retry = true;
+      await new Promise(r => setTimeout(r, 400));
+      return apiClient(config);
+    }
+
     if (err.response?.status === 401) {
       localStorage.removeItem('deal_token');
       localStorage.removeItem('deal_user');
@@ -35,8 +53,23 @@ export const loginUser = async (email: string, password: string) => {
   return res.data;
 };
 
+export const fetchCurrentUser = async (): Promise<User> => {
+  const res = await apiClient.get('/auth/me');
+  return res.data.data.user;
+};
+
 export const registerUser = async (username: string, email: string, password: string) => {
   const res = await apiClient.post('/auth/register', { username, email, password });
+  return res.data;
+};
+
+export const verifyEmail = async (token: string) => {
+  const res = await apiClient.post('/auth/verify-email', { token });
+  return res.data;
+};
+
+export const resendVerificationEmail = async (email: string) => {
+  const res = await apiClient.post('/auth/resend-verification', { email });
   return res.data;
 };
 
@@ -72,9 +105,20 @@ export const fetchDashboardDrops = async () => {
   return res.data.data?.priceDrops || [];
 };
 
-export const fetchProducts = async (page = 1, limit = 12, category?: string, search?: string, minPrice?: number, maxPrice?: number, sort?: string, store?: string) => {
+export const fetchProducts = async (
+  page = 1,
+  limit = 12,
+  category?: string,
+  search?: string,
+  minPrice?: number,
+  maxPrice?: number,
+  sort?: string,
+  store?: string,
+  type?: string
+) => {
   const params: any = { page, limit };
   if (category) params.category = category;
+  if (type && type !== 'All') params.type = type;
   if (search) params.search = search;
   if (minPrice) params.min_price = minPrice;
   if (maxPrice) params.max_price = maxPrice;
@@ -116,6 +160,11 @@ export const fetchPriceAlerts = async () => {
 
 export const createPriceAlert = async (productId: number, targetPrice: number) => {
   const res = await apiClient.post('/alerts', { productId, targetPrice });
+  return res.data;
+};
+
+export const updatePriceAlert = async (alertId: number, targetPrice: number) => {
+  const res = await apiClient.put(`/alerts/${alertId}`, { targetPrice });
   return res.data;
 };
 
@@ -166,3 +215,102 @@ export const deleteSearchQueryFromDB = async (query: string) => {
 export const clearSearchHistoryFromDB = async () => {
   await apiClient.delete('/history');
 };
+
+export const fetchAdminReport = async (): Promise<AdminReport> => {
+  const res = await apiClient.get('/admin/report');
+  return res.data.data;
+};
+
+export const fetchAdminProducts = async (params?: {
+  search?: string;
+  status?: 'all' | 'active' | 'inactive';
+  page?: number;
+  limit?: number;
+}): Promise<AdminProductListResponse> => {
+  const queryParams: Record<string, string | number> = {};
+  if (params?.search) queryParams.search = params.search;
+  if (params?.status) queryParams.status = params.status;
+  if (params?.page) queryParams.page = params.page;
+  if (params?.limit) queryParams.limit = params.limit;
+
+  const res = await apiClient.get('/admin/products', { params: queryParams });
+  return {
+    products: res.data.data.products,
+    pagination: res.data.pagination,
+    results: res.data.results
+  };
+};
+
+export const createAdminProduct = async (payload: CreateAdminProductPayload): Promise<{ product: AdminProduct }> => {
+  const res = await apiClient.post('/admin/products', payload);
+  return res.data.data;
+};
+
+export const updateAdminProduct = async (productId: number, payload: UpdateAdminProductPayload): Promise<{ product: AdminProduct }> => {
+  const res = await apiClient.patch(`/admin/products/${productId}`, payload);
+  return res.data.data;
+};
+
+export const deactivateAdminProduct = async (productId: number): Promise<any> => {
+  const res = await apiClient.patch(`/admin/products/${productId}/deactivate`);
+  return res.data.data;
+};
+
+export const reactivateAdminProduct = async (productId: number): Promise<any> => {
+  const res = await apiClient.patch(`/admin/products/${productId}/reactivate`);
+  return res.data.data;
+};
+
+export const fetchAdminCategories = async (): Promise<AdminCategory[]> => {
+  const res = await apiClient.get('/admin/categories');
+  return res.data.data.categories;
+};
+
+export const fetchAdminStores = async (): Promise<AdminStore[]> => {
+  const res = await apiClient.get('/admin/stores');
+  return res.data.data.stores;
+};
+
+export const fetchAdminProductOffers = async (productId: number): Promise<AdminProductOffersResponse> => {
+  const res = await apiClient.get(`/admin/products/${productId}/offers`);
+  return res.data.data;
+};
+
+export const createAdminProductOffer = async (
+  productId: number,
+  payload: CreateAdminOfferPayload
+): Promise<{ offer: AdminRetailerOffer }> => {
+  const res = await apiClient.post(`/admin/products/${productId}/offers`, payload);
+  return res.data.data;
+};
+
+export const updateAdminOffer = async (
+  priceId: number | string,
+  payload: UpdateAdminOfferPayload
+): Promise<{ offer: AdminRetailerOffer; changed: boolean; priceChanged: boolean }> => {
+  const res = await apiClient.patch(`/admin/offers/${priceId}`, payload);
+  return res.data.data;
+};
+
+export const setAdminOfferAvailability = async (
+  priceId: number | string,
+  isAvailable: boolean
+): Promise<{ offer: AdminRetailerOffer }> => {
+  const res = await apiClient.patch(`/admin/offers/${priceId}/availability`, { is_available: isAvailable });
+  return res.data.data;
+};
+
+export const fetchAdminSyncStatus = async (): Promise<AdminSyncStatusData> => {
+  const res = await apiClient.get('/admin/sync-status');
+  return res.data.data;
+};
+
+export const updateAdminEmail = async (payload: {
+  currentPassword: string;
+  newEmail: string;
+  confirmEmail: string;
+}): Promise<{ status: string; message: string; data?: { user: any } }> => {
+  const res = await apiClient.patch('/admin/account/email', payload);
+  return res.data;
+};
+

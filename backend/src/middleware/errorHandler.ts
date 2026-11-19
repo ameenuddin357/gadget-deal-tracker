@@ -59,14 +59,35 @@ export const errorHandler = (
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
-  // 2. Map database connection failures to 503 Service Unavailable
-  if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
+  // 2. Map database connection failures and timeouts to 503 Service Unavailable
+  if (
+    err.code === 'ECONNREFUSED' ||
+    err.code === 'ECONNRESET' ||
+    err.code === 'ETIMEDOUT' ||
+    err.code === 'EPIPE' ||
+    err.code === '57P01' ||
+    err.code === '57P02' ||
+    err.code === '57P03' ||
+    err.code === '08006' ||
+    err.code === '08001' ||
+    err.code === '08004' ||
+    err.message?.includes('ECONNREFUSED') ||
+    err.message?.includes('ECONNRESET') ||
+    err.message?.includes('Connection terminated') ||
+    err.message?.includes('connection timeout') ||
+    err.message?.includes('timeout') ||
+    err.message?.includes('socket hang up') ||
+    err.message?.includes('EPIPE') ||
+    err.message?.includes('write EPIPE') ||
+    err.message?.includes('closed unexpectedly') ||
+    err.message?.includes('terminating connection')
+  ) {
     err.statusCode = 503;
     err.status = 'error';
-    console.warn('[PostgreSQL Connection Refused] Database service is currently offline or unreachable.');
+    console.warn(`[PostgreSQL Connection Error] ${err.message || 'Database connection timeout'}`);
     res.status(503).json({
       status: 'error',
-      message: 'Service is temporarily unavailable. Please try again shortly.'
+      message: 'Service is temporarily experiencing latency. Please try again shortly.'
     });
     return;
   }

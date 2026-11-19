@@ -1,7 +1,4 @@
-import dotenv from 'dotenv';
 import db from '../config/db.ts';
-
-dotenv.config();
 
 interface CallLog {
   timestamp: number;
@@ -157,9 +154,47 @@ export class QuotaTracker {
   }
 
   /**
+   * Strictly read-only version of getStats() for administrative telemetry.
+   * Performs zero mutations (no DELETE pruning, no INSERT, no UPDATE).
+   */
+  public static async getStatsReadOnly() {
+    const offsets: Record<string, number> = { amazon: 0, google: 0, flipkart: 0 };
+    try {
+      const res = await db.query('SELECT source, offset_value FROM api_quota_calibration');
+      for (const row of res.rows) {
+        offsets[row.source] = row.offset_value;
+      }
+    } catch (err: any) {
+      console.warn('[QuotaTracker] Failed to fetch calibration offsets:', err.message);
+    }
+
+    return {
+      runCounts: { ...this.runCounts },
+      billingCycleCounts: {
+        amazon: await this.getCallsInCurrentBillingCycle('amazon', false, false),
+        google: await this.getCallsInCurrentBillingCycle('google', false, false),
+        flipkart: await this.getCallsInCurrentBillingCycle('flipkart', false, false)
+      },
+      offsets,
+      caps: {
+        amazon: this.getCap('amazon'),
+        google: this.getCap('google'),
+        flipkart: this.getCap('flipkart')
+      },
+      daysUntilReset: this.getDaysUntilReset(),
+      billingCycleStart: this.getBillingCycleStartDate().toISOString(),
+      billingCycleEnd: this.getBillingCycleEndDate().toISOString()
+    };
+  }
+
+  /**
    * Helper to clean up old logs and count remaining within the current billing cycle.
    */
-  public static async getCallsInCurrentBillingCycle(source: 'amazon' | 'google' | 'flipkart', excludeOffset: boolean = false): Promise<number> {
+  public static async getCallsInCurrentBillingCycle(
+    source: 'amazon' | 'google' | 'flipkart',
+    excludeOffset: boolean = false,
+    allowPrune: boolean = true
+  ): Promise<number> {
     const startDate = this.getBillingCycleStartDate();
     const startMs = startDate.getTime();
     let dbCount = 0;
@@ -168,11 +203,13 @@ export class QuotaTracker {
         'SELECT COUNT(*)::int as count FROM api_call_logs WHERE source = $1 AND timestamp >= $2',
         [source, startMs]
       );
-      // Asynchronously prune older entries (older than 90 days) to keep DB size managed
-      const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
-      db.query('DELETE FROM api_call_logs WHERE timestamp < $1', [ninetyDaysAgo]).catch(err => {
-        console.warn('[QuotaTracker DB Prune Error] Ignored:', err.message);
-      });
+      // Asynchronously prune older entries (older than 90 days) to keep DB size managed only when permitted
+      if (allowPrune) {
+        const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        db.query('DELETE FROM api_call_logs WHERE timestamp < $1', [ninetyDaysAgo]).catch(err => {
+          console.warn('[QuotaTracker DB Prune Error] Ignored:', err.message);
+        });
+      }
       dbCount = res.rows[0]?.count || 0;
     } catch (err: any) {
       console.warn(`[QuotaTracker DB Read Error] Falling back to memory structure: ${err.message}`);

@@ -13,6 +13,38 @@ export function formatINR(value: number): string {
   }).format(value);
 }
 
+/**
+ * Compact Indian Rupee (INR) Y-axis formatter for chart price ticks.
+ * Ensures distinct readable ticks without over-rounding collapse:
+ * - >= 1,00,000 (1 Lakh): e.g. 146490 -> ₹1.46L, 150000 -> ₹1.5L
+ * - >= 20,000: e.g. 25000 -> ₹25k, 72500 -> ₹72.5k, 72990 -> ₹73k
+ * - < 20,000: preserves exact precision e.g. 1599 -> ₹1,599, 1550 -> ₹1,550, 7199 -> ₹7,199
+ */
+export function formatAxisPrice(value: number): string {
+  if (value === undefined || value === null || isNaN(value)) {
+    return '';
+  }
+  const abs = Math.abs(value);
+
+  if (abs >= 100000) {
+    const inLakhs = value / 100000;
+    const formatted = inLakhs % 1 === 0 
+      ? inLakhs.toFixed(0) 
+      : inLakhs.toFixed(2).replace(/\.?0+$/, '');
+    return `₹${formatted}L`;
+  }
+
+  if (abs >= 20000) {
+    const inK = value / 1000;
+    const formatted = inK % 1 === 0 
+      ? inK.toFixed(0) 
+      : inK.toFixed(1).replace(/\.?0+$/, '');
+    return `₹${formatted}k`;
+  }
+
+  return `₹${Math.round(value).toLocaleString('en-IN')}`;
+}
+
 export interface DiscountInfo {
   isValid: boolean;
   discountPercentage: number;
@@ -318,4 +350,52 @@ export function extractParsedSpecs(product: { name: string; brand?: string; cate
     rawSummary: rawSummary.trim() || undefined
   };
 }
+
+export interface PriceAlertValidationResult {
+  isValid: boolean;
+  error?: string;
+  minReasonablePrice?: number;
+}
+
+export function validatePriceAlertTarget(
+  targetPrice: number | string,
+  currentLowestPrice?: number | null
+): PriceAlertValidationResult {
+  const target = typeof targetPrice === 'string' ? parseFloat(targetPrice) : targetPrice;
+
+  if (isNaN(target) || !Number.isFinite(target) || target <= 0) {
+    return {
+      isValid: false,
+      error: 'Please enter a valid positive target price.'
+    };
+  }
+
+  if (target > 10000000) {
+    return {
+      isValid: false,
+      error: 'Target price cannot exceed ₹1,00,00,000.'
+    };
+  }
+
+  if (currentLowestPrice !== undefined && currentLowestPrice !== null && !isNaN(currentLowestPrice) && currentLowestPrice > 0) {
+    if (target >= currentLowestPrice) {
+      return {
+        isValid: false,
+        error: `Target price (${formatINR(target)}) must be lower than the current best price (${formatINR(currentLowestPrice)}).`
+      };
+    }
+
+    const minReasonablePrice = Math.ceil(currentLowestPrice * 0.10);
+    if (target < minReasonablePrice) {
+      return {
+        isValid: false,
+        minReasonablePrice,
+        error: `Target price of ${formatINR(target)} is unusually low compared with the current price (more than 90% below ${formatINR(currentLowestPrice)}). Please enter a realistic target price of at least ${formatINR(minReasonablePrice)}.`
+      };
+    }
+  }
+
+  return { isValid: true };
+}
+
 

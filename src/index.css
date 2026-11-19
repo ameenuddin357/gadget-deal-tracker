@@ -6,3 +6,43 @@
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --font-display: "Space Grotesk", sans-serif;
 }
+
+html, body {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+.line-clamp-2-guaranteed {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  word-break: break-word;
+}
+
+/* ==========================================================================
+   Global Interactive Controls Cursor Policy
+   Ensures all enabled clickable UI controls display pointer cursor,
+   while disabled controls display not-allowed cursor project-wide.
+   ========================================================================== */
+
+button:not(:disabled),
+a[href],
+[role="button"]:not([aria-disabled="true"]),
+input[type="button"]:not(:disabled),
+input[type="submit"]:not(:disabled),
+input[type="reset"]:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled),
+select:not(:disabled),
+label[for] {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"],
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+

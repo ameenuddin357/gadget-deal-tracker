@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler.ts';
 
 /**
  * SEARCH HISTORY - GET RECENT USER SEARCHES (UP TO 20 DETAILED ENTRIES)
+ * Deduplicated by normalized search query, keeping the most recent entry with its product data.
  * GET /api/history
  */
 export const getSearchHistory = async (
@@ -16,18 +17,36 @@ export const getSearchHistory = async (
 
     const sql = `
       SELECT 
-        history_id, 
-        product_id,
-        COALESCE(search_term, query) AS search_term,
-        COALESCE(search_term, query) AS query,
-        product_name,
-        product_image,
-        lowest_price,
-        store_name,
-        searched_at
-      FROM search_history
-      WHERE user_id = $1
-      ORDER BY searched_at DESC
+        sub.history_id, 
+        sub.product_id,
+        sub.search_term,
+        sub.query,
+        sub.product_name,
+        sub.product_image,
+        sub.lowest_price,
+        sub.store_name,
+        sub.searched_at,
+        sub.searched_at AS last_searched_at
+      FROM (
+        SELECT DISTINCT ON (LOWER(TRIM(REGEXP_REPLACE(COALESCE(search_term, query, ''), '\\s+', ' ', 'g'))))
+          history_id,
+          product_id,
+          COALESCE(search_term, query) AS search_term,
+          COALESCE(search_term, query) AS query,
+          product_name,
+          product_image,
+          lowest_price,
+          store_name,
+          searched_at
+        FROM search_history
+        WHERE user_id = $1
+          AND TRIM(COALESCE(search_term, query, '')) <> ''
+        ORDER BY 
+          LOWER(TRIM(REGEXP_REPLACE(COALESCE(search_term, query, ''), '\\s+', ' ', 'g'))), 
+          searched_at DESC, 
+          history_id DESC
+      ) sub
+      ORDER BY sub.searched_at DESC
       LIMIT 20;
     `;
 
@@ -77,6 +96,7 @@ export const recordSearch = async (
     }
 
     const activeQuery = rawQuery.trim().replace(/\s+/g, ' ').slice(0, 200);
+    const normalizedQuery = activeQuery.toLowerCase();
 
     let activeProductName = typeof (productName || product_name) === 'string' ? (productName || product_name).slice(0, 255) : null;
     let activeProductImage = typeof (productImage || product_image) === 'string' ? (productImage || product_image).slice(0, 500) : null;
@@ -126,35 +146,37 @@ export const recordSearch = async (
       } catch (err) {}
     }
 
-    // Duplication Guard: Prevent duplicate search listings within a 1-day timeframe by updating timestamp
+    // Duplication Guard: Check if an existing normalized record exists for this user across history
     const checkSql = `
       SELECT history_id 
       FROM search_history 
       WHERE user_id = $1 
-        AND (LOWER(REGEXP_REPLACE(search_term, '\\s+', ' ', 'g')) = LOWER($2) OR LOWER(REGEXP_REPLACE(query, '\\s+', ' ', 'g')) = LOWER($2))
-        AND searched_at::date = CURRENT_DATE
+        AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(search_term, query, ''), '\\s+', ' ', 'g'))) = $2
       ORDER BY searched_at DESC 
       LIMIT 1;
     `;
-    const checkRes = await db.query(checkSql, [userId, activeQuery]);
+    const checkRes = await db.query(checkSql, [userId, normalizedQuery]);
 
     let finalRecord;
 
     if (checkRes.rows.length > 0) {
-      // Update existing record timestamp and detail values
+      // Update existing record timestamp and fresh discovered details
       const existingId = checkRes.rows[0].history_id;
       const updateSql = `
         UPDATE search_history 
         SET searched_at = CURRENT_TIMESTAMP,
-            product_name = COALESCE($1, product_name),
-            product_image = COALESCE($2, product_image),
-            lowest_price = COALESCE($3, lowest_price),
-            store_name = COALESCE($4, store_name),
-            product_id = COALESCE($5, product_id)
-        WHERE history_id = $6
-        RETURNING history_id, product_id, search_term, searched_at, product_name, product_image, lowest_price, store_name;
+            search_term = $1,
+            query = $1,
+            product_name = COALESCE($2, product_name),
+            product_image = COALESCE($3, product_image),
+            lowest_price = COALESCE($4, lowest_price),
+            store_name = COALESCE($5, store_name),
+            product_id = COALESCE($6, product_id)
+        WHERE history_id = $7
+        RETURNING history_id, product_id, search_term, query, searched_at, product_name, product_image, lowest_price, store_name;
       `;
       const updateRes = await db.query(updateSql, [
+        activeQuery,
         activeProductName, 
         activeProductImage, 
         activeLowestPrice, 
@@ -168,7 +190,7 @@ export const recordSearch = async (
       const insertSql = `
         INSERT INTO search_history (user_id, search_term, query, product_name, product_image, lowest_price, store_name, product_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING history_id, product_id, search_term, searched_at, product_name, product_image, lowest_price, store_name;
+        RETURNING history_id, product_id, search_term, query, searched_at, product_name, product_image, lowest_price, store_name;
       `;
       const insertRes = await db.query(insertSql, [
         userId, 
@@ -193,16 +215,16 @@ export const recordSearch = async (
   } catch (err: any) {
     if (err.code === '23503') {
       try {
-        // Retry without product_id to ensure the search is recorded even if product relation fails
+        const rawQ = (req.body.searchTerm || req.body.query || '').trim().replace(/\s+/g, ' ').slice(0, 200);
         const insertSql = `
           INSERT INTO search_history (user_id, search_term, query, product_name, product_image, lowest_price, store_name, product_id)
           VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
-          RETURNING history_id, product_id, search_term, searched_at, product_name, product_image, lowest_price, store_name;
+          RETURNING history_id, product_id, search_term, query, searched_at, product_name, product_image, lowest_price, store_name;
         `;
         const insertRes = await db.query(insertSql, [
           req.user!.userId, 
-          (req.body.searchTerm || req.body.query || '').trim(), 
-          (req.body.searchTerm || req.body.query || '').trim(), 
+          rawQ, 
+          rawQ, 
           req.body.productName || req.body.product_name || null, 
           req.body.productImage || req.body.product_image || null, 
           req.body.lowestPrice !== undefined ? req.body.lowestPrice : (req.body.lowest_price !== undefined ? req.body.lowest_price : null), 
@@ -239,12 +261,18 @@ export const deleteSearchQuery = async (
     const userId = req.user!.userId;
     const { query } = req.body;
 
-    if (!query) {
+    if (!query || typeof query !== 'string') {
       return next(new AppError('Search query parameter to delete is missing.', 400));
     }
 
-    const sql = 'DELETE FROM search_history WHERE user_id = $1 AND (LOWER(search_term) = LOWER($2) OR LOWER(query) = LOWER($2));';
-    await db.query(sql, [userId, query.trim()]);
+    const normalized = query.trim().replace(/\s+/g, ' ').toLowerCase();
+
+    const sql = `
+      DELETE FROM search_history 
+      WHERE user_id = $1 
+        AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(search_term, query, ''), '\\s+', ' ', 'g'))) = $2;
+    `;
+    await db.query(sql, [userId, normalized]);
 
     res.status(200).json({
       status: 'success',

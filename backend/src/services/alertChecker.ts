@@ -24,7 +24,7 @@ export const checkAllActiveAlerts = async (): Promise<void> => {
         ORDER BY product_id, price ASC
       ) curr_p ON pa.product_id = curr_p.product_id
       JOIN stores s ON curr_p.store_id = s.store_id
-      WHERE pa.is_active = TRUE;
+      WHERE pa.is_active = TRUE AND p.is_active = TRUE;
     `;
     
     const result = await db.query(sql);

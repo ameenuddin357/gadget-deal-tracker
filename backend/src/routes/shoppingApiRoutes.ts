@@ -19,10 +19,13 @@ function toINRString(value: number): string {
 }
 
 /**
- * GET /api/search?q=
- * Real-time searches electronic gadgets using query key strings, fetches current retail indexes across multiple stores, 
- * persists them securely inside PostgreSQL database indexes, and returns detailed matching datasets.
+ * PHASE 3A.1 LOCKDOWN:
+ * The unauthenticated public route GET /api/search?q= triggered external shopping API sync
+ * (RapidAPI Amazon, Google Shopping, Flipkart) and is unused by the frontend SPA.
+ * Route registration has been disabled to guarantee ₹0 cost-safety.
+ * External synchronization remains available strictly to administrators via POST /api/admin/sync.
  */
+/*
 router.get('/search', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const queryTerm = req.query.q as string;
@@ -145,6 +148,7 @@ router.get('/search', async (req: Request, res: Response, next: NextFunction): P
     next(err);
   }
 });
+*/
 
 /**
  * GET /api/products/:id/prices

@@ -1,10 +1,11 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import { generateContentWithModelFallback } from './geminiHelper.ts';
+// Phase 3A.1A: Strictly deterministic, local regex-based query parsing for zero-cost catalogue search.
+// Gemini AI is preserved exclusively for authenticated AI Recommendation & AI Chat endpoints.
 
 export interface ParsedQuery {
   originalQuery: string;
   keywords: string;
   category: string | null;
+  productType: string | null;
   minPrice: number | null;
   maxPrice: number | null;
 }
@@ -35,7 +36,7 @@ export function parseAmount(numStr: string, unitStr?: string): number | null {
 
 export function deterministicParse(query: string): ParsedQuery {
   if (!query || typeof query !== 'string') {
-    return { originalQuery: '', keywords: '', category: null, minPrice: null, maxPrice: null };
+    return { originalQuery: '', keywords: '', category: null, productType: null, minPrice: null, maxPrice: null };
   }
 
   const orig = query.trim();
@@ -44,6 +45,7 @@ export function deterministicParse(query: string): ParsedQuery {
   let minPrice: number | null = null;
   let maxPrice: number | null = null;
   let category: string | null = null;
+  let productType: string | null = null;
 
   // 1. Range match e.g. "between 20000 and 40000" or "between 20k and 40k" or "from 20000 to 40000"
   const rangeRegex = /(?:between|from)\s+(?:rs\.?|inr|₹)?\s*([0-9.,]+)\s*(lakh|lacs|lac|l|k|thousand)?\s+(?:and|to|-)\s+(?:rs\.?|inr|₹)?\s*([0-9.,]+)\s*(lakh|lacs|lac|l|k|thousand)?/i;
@@ -70,26 +72,44 @@ export function deterministicParse(query: string): ParsedQuery {
     }
   }
 
-  // 4. Category Mapping
+  // 4. Explicit Product Type & Category Mapping
   const fullQ = orig.toLowerCase();
-  if (/\b(galaxy watch)\b/i.test(fullQ)) {
-    category = 'Smart Wearables';
-  } else if (/\b(gaming laptop|gaming laptops|laptop|laptops|notebook|notebooks|macbook|chromebook|desktop|desktops)\b/i.test(fullQ)) {
+  if (/\b(gaming laptop|gaming laptops|laptop|laptops|notebook|notebooks|macbook|macbooks|chromebook|chromebooks)\b/i.test(fullQ)) {
+    productType = 'Laptops';
     category = 'Laptops & Desktops';
-  } else if (/\b(android phones|android phone|iphone|smartphone|smartphones|phone|phones|mobile|mobiles|tablet|tablets|ipad)\b/i.test(fullQ)) {
+  } else if (/\b(monitor|monitors|display|displays|curved screen|ultrawide)\b/i.test(fullQ)) {
+    productType = 'Monitors';
+    category = 'Laptops & Desktops';
+  } else if (/\b(android phones|android phone|iphone|iphones|smartphone|smartphones|phone|phones|mobile|mobiles)\b/i.test(fullQ)) {
+    productType = 'Phones';
     category = 'Smartphones & Tablets';
-  } else if (/\b(headphone|headphones|earbuds|earphones|earphone|headset|headsets|speaker|speakers|soundbar|anc)\b/i.test(fullQ)) {
+  } else if (/\b(tablet|tablets|ipad|ipads)\b/i.test(fullQ)) {
+    productType = 'Tablets';
+    category = 'Smartphones & Tablets';
+  } else if (/\b(smartwatch|smart watch|smartwatches|fitness band|galaxy fit|galaxy watch|wearable|wearables)\b/i.test(fullQ)) {
+    productType = 'Smartwatches';
+    category = 'Smart Wearables';
+  } else if (/\b(headphone|headphones|earbuds|earphones|earphone|headset|headsets)\b/i.test(fullQ)) {
+    productType = 'Headphones';
     category = 'Audio Equipment';
-  } else if (/\b(smartwatch|smart watch|smartwatches|wearable|wearables|fitness band|watch)\b/i.test(fullQ)) {
+  } else if (/\b(television|televisions|tv|tvs)\b/i.test(fullQ)) {
+    productType = 'Televisions';
+    category = 'Televisions';
+  } else if (/\b(desktop|desktops)\b/i.test(fullQ)) {
+    category = 'Laptops & Desktops';
+  } else if (/\b(audio|speaker|speakers|soundbar|soundbars|anc)\b/i.test(fullQ)) {
+    category = 'Audio Equipment';
+  } else if (/\b(watch|watches)\b/i.test(fullQ)) {
     category = 'Smart Wearables';
   }
 
   // 5. Keyword Cleaning
   let keywords = q;
-  if (category) {
+  if (category || productType) {
     const genericCatWords = [
       'android', 'phones', 'phone', 'mobiles', 'mobile', 'smartphones', 'smartphone', 'tablets', 'tablet',
       'laptops', 'laptop', 'notebooks', 'notebook', 'desktops', 'desktop',
+      'monitors', 'monitor', 'displays', 'display',
       'headphones', 'headphone', 'earbuds', 'earphones', 'earphone', 'headsets', 'headset', 'speakers', 'speaker',
       'smartwatch', 'smartwatches', 'wearables', 'wearable'
     ];
@@ -102,6 +122,7 @@ export function deterministicParse(query: string): ParsedQuery {
     originalQuery: orig,
     keywords: keywords.trim(),
     category,
+    productType,
     minPrice,
     maxPrice
   };
@@ -109,7 +130,7 @@ export function deterministicParse(query: string): ParsedQuery {
 
 export async function parseNaturalLanguageQuery(query: string): Promise<ParsedQuery> {
   if (!query || typeof query !== 'string' || !query.trim()) {
-    return { originalQuery: '', keywords: '', category: null, minPrice: null, maxPrice: null };
+    return { originalQuery: '', keywords: '', category: null, productType: null, minPrice: null, maxPrice: null };
   }
 
   const cleanQuery = query.trim();
@@ -119,71 +140,9 @@ export async function parseNaturalLanguageQuery(query: string): Promise<ParsedQu
     return queryCache.get(cacheKey)!;
   }
 
-  const fallback = deterministicParse(cleanQuery);
-
-  if (!process.env.GEMINI_API_KEY) {
-    queryCache.set(cacheKey, fallback);
-    return fallback;
-  }
-
-  try {
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build'
-        }
-      }
-    });
-
-    const geminiPromise = generateContentWithModelFallback(ai, {
-      contents: `Parse the following Indian shopping query into structured JSON filter values for an e-commerce catalogue:
-Query: "${cleanQuery}"
-
-Categories must strictly be one of:
-- "Laptops & Desktops"
-- "Smartphones & Tablets"
-- "Audio Equipment"
-- "Smart Wearables"
-- null (if query does not specify a product category)
-
-Convert currency expressions (e.g. 1.3 lakh = 130000, 30k = 30000, 5000 = 5000) into integer numbers.
-Extract non-category brand or spec keywords (e.g., "gaming", "asus", "samsung", "sony", "iphone").`,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            keywords: { type: Type.STRING },
-            category: { type: Type.STRING, nullable: true },
-            minPrice: { type: Type.INTEGER, nullable: true },
-            maxPrice: { type: Type.INTEGER, nullable: true }
-          },
-          required: ['keywords']
-        }
-      }
-    });
-
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500));
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
-
-    if (response && response.text) {
-      const parsed = JSON.parse(response.text.trim());
-      const category = (parsed.category && VALID_CATEGORIES.includes(parsed.category)) ? parsed.category : fallback.category;
-      const result: ParsedQuery = {
-        originalQuery: cleanQuery,
-        keywords: typeof parsed.keywords === 'string' ? parsed.keywords.trim() : fallback.keywords,
-        category,
-        minPrice: typeof parsed.minPrice === 'number' ? parsed.minPrice : fallback.minPrice,
-        maxPrice: typeof parsed.maxPrice === 'number' ? parsed.maxPrice : fallback.maxPrice
-      };
-      queryCache.set(cacheKey, result);
-      return result;
-    }
-  } catch (err) {
-    // Fallback to deterministic parser
-  }
-
-  queryCache.set(cacheKey, fallback);
-  return fallback;
+  // Phase 3A.1A: Always use fast, zero-cost deterministic local parsing for public catalog search.
+  // Gemini AI is strictly reserved for authenticated AI Recommendation and AI Chat features.
+  const result = deterministicParse(cleanQuery);
+  queryCache.set(cacheKey, result);
+  return result;
 }

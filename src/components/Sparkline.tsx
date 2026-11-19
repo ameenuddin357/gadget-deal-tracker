@@ -6,17 +6,23 @@ interface SparklineProps {
   height?: number;
 }
 
-export const Sparkline: React.FC<SparklineProps> = ({ history, width = 80, height = 28 }) => {
+export const Sparkline: React.FC<SparklineProps> = ({ history, width = 70, height = 24 }) => {
   if (!history || history.length < 2) {
     return (
-      <div className="text-[10px] text-slate-400 font-medium italic">
+      <div className="text-[10px] text-slate-400 font-medium italic whitespace-nowrap shrink-0">
         Tracking started
       </div>
     );
   }
 
   const prices = history.map(h => typeof h.price === 'string' ? parseFloat(h.price) : h.price).filter(p => !isNaN(p));
-  if (prices.length < 2) return null;
+  if (prices.length < 2) {
+    return (
+      <div className="text-[10px] text-slate-400 font-medium italic whitespace-nowrap shrink-0">
+        Tracking started
+      </div>
+    );
+  }
 
   const min = Math.min(...prices);
   const max = Math.max(...prices);
@@ -36,8 +42,8 @@ export const Sparkline: React.FC<SparklineProps> = ({ history, width = 80, heigh
   const lastPointY = height - 4 - ((prices[prices.length - 1] - min) / range) * (height - 8);
 
   return (
-    <div className="flex items-center gap-1.5" title={`Price trend (${prices.length} data points)`}>
-      <svg width={width} height={height} className="overflow-visible">
+    <div className="flex items-center gap-1.5 shrink-0" title={`Price trend (${prices.length} data points)`}>
+      <svg width={width} height={height} className="overflow-visible shrink-0">
         <polyline
           fill="none"
           stroke={strokeColor}

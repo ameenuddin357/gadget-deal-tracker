@@ -24,12 +24,14 @@ export const getWatchlist = async (
         p.brand, 
         p.specs_summary, 
         p.image_url, 
+        p.is_active,
         min_p.lowest_live_price,
-        min_p.store_name AS purchase_outlet
+        min_p.store_name AS purchase_outlet,
+        min_p.product_url
       FROM watchlist w
       JOIN products p ON w.product_id = p.product_id
       LEFT JOIN (
-        SELECT DISTINCT ON (product_id) product_id, price AS lowest_live_price, s.name AS store_name
+        SELECT DISTINCT ON (product_id) product_id, price AS lowest_live_price, s.name AS store_name, pp.product_url
         FROM product_prices pp
         JOIN stores s ON pp.store_id = s.store_id
         WHERE pp.is_available = TRUE
@@ -96,10 +98,13 @@ export const addToWatchlist = async (
       return next(new AppError('Invalid numeric product identifier.', 400));
     }
 
-    // Verify catalog entry exists prior to writing connection tuple
-    const productCheck = await db.query('SELECT product_id FROM products WHERE product_id = $1;', [pId]);
+    // Verify catalog entry exists and is active prior to writing connection tuple
+    const productCheck = await db.query('SELECT product_id, is_active FROM products WHERE product_id = $1;', [pId]);
     if (productCheck.rows.length === 0) {
       return next(new AppError('No catalog product found matching this identifier.', 404));
+    }
+    if (!productCheck.rows[0].is_active) {
+      return next(new AppError('Cannot add inactive or discontinued products to watchlist.', 400));
     }
 
     // Attempt to write the bookmark linkage safely

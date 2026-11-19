@@ -10,8 +10,9 @@ const router = Router();
 router.get('/', getAllProducts);
 
 // Search product catalog (LIKE wildcards filter)
-// GET /api/v1/products/search/:query
-router.get('/search/:query', searchProducts);
+// Phase 3A.1 Lockdown: Public GET /api/products/search/:query disabled to prevent unauthenticated
+// external Gemini AI invocations via nlParser. Normal catalogue search uses GET /api/products?search=...
+// router.get('/search/:query', searchProducts);
 
 // GET /api/v1/products/:id/ai-recommendation - Requires Auth
 router.get('/:id/ai-recommendation', protect, aiRateLimiter, getProductAiRecommendation);

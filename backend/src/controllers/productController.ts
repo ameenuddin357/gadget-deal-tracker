@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler.ts';
 import { parseNaturalLanguageQuery, ParsedQuery } from '../utils/nlParser.ts';
 import { GoogleGenAI, Type } from '@google/genai';
 import { generateContentWithModelFallback } from '../utils/geminiHelper.ts';
+import { getProductTypeSqlExpression, getRecommendedBucketSqlExpression, normalizeProductType } from '../utils/productClassifier.ts';
 
 // In-memory cache for AI deal recommendations
 // Key: productId
@@ -324,6 +325,7 @@ export const getAllProducts = async (
     const brand = req.query.brand;
     const searchRaw = req.query.search as string | undefined;
     const categoryRaw = req.query.category as string | undefined;
+    const typeRaw = req.query.type as string | undefined;
     const minPriceRaw = req.query.min_price as string | undefined;
     const maxPriceRaw = req.query.max_price as string | undefined;
     const sort = req.query.sort as string;
@@ -334,7 +336,13 @@ export const getAllProducts = async (
       nlParsed = await parseNaturalLanguageQuery(searchRaw.slice(0, 200));
     }
 
-    const effectiveCategory = categoryRaw && categoryRaw.trim().length > 0 ? categoryRaw.trim().slice(0, 100) : (nlParsed?.category || undefined);
+    // Determine type vs category: explicit type param, category param, or resolved natural language product type
+    const resolvedProductType = normalizeProductType(typeRaw) || 
+      normalizeProductType(categoryRaw) || 
+      (nlParsed?.productType ? normalizeProductType(nlParsed.productType) : null);
+    const effectiveCategory = !resolvedProductType && categoryRaw && categoryRaw.trim().length > 0 
+      ? categoryRaw.trim().slice(0, 100) 
+      : (nlParsed?.category || undefined);
 
     let effectiveMinPrice: number | undefined = undefined;
     if (minPriceRaw !== undefined && minPriceRaw !== '') {
@@ -359,7 +367,21 @@ export const getAllProducts = async (
       effectiveMaxPrice = temp;
     }
 
-    const effectiveKeywords = nlParsed ? nlParsed.keywords : (searchRaw ? searchRaw.trim().slice(0, 200) : '');
+    const cleanSearch = (searchRaw || '').trim().replace(/\s+/g, ' ');
+
+    // Phase 3A.1B (Safe Fallback Rule):
+    // When deterministic parsing produces meaningful structured information (category, productType, minPrice, maxPrice),
+    // use the remaining keywords so structured tokens (like 'under 50k') don't pollute the text filter.
+    // When parsing does NOT produce structured information, preserve the user's raw search text as the keyword.
+    const hasStructuredInfo = Boolean(
+      nlParsed && (nlParsed.category !== null || nlParsed.productType !== null || nlParsed.minPrice !== null || nlParsed.maxPrice !== null)
+    );
+
+    const effectiveKeywords = hasStructuredInfo
+      ? (nlParsed?.keywords ? nlParsed.keywords.trim().replace(/\s+/g, ' ') : '')
+      : ((nlParsed?.keywords && nlParsed.keywords.trim().length > 0)
+          ? nlParsed.keywords.trim().replace(/\s+/g, ' ')
+          : cleanSearch);
 
     let queryParams: any[] = [];
     let subqueryWhere = 'WHERE pp.is_available = TRUE';
@@ -369,7 +391,7 @@ export const getAllProducts = async (
       subqueryWhere += ` AND s.name ILIKE $${queryParams.length}`;
     }
 
-    let filterClauses: string[] = ['min_p.cheapest_price IS NOT NULL'];
+    let filterClauses: string[] = ['min_p.cheapest_price IS NOT NULL', 'p.is_active = TRUE'];
 
     if (categoryId) {
       const catIdNum = parseInt(categoryId as string, 10);
@@ -384,8 +406,27 @@ export const getAllProducts = async (
       filterClauses.push(`p.brand = $${queryParams.length}`);
     }
 
-    if (effectiveCategory) {
-      queryParams.push(`%${effectiveCategory}%`);
+    // Dedicated Product Type Filter (Laptops, Monitors, Smartwatches, Phones, Tablets, Headphones)
+    if (resolvedProductType) {
+      const typeSql = getProductTypeSqlExpression('p', 'c');
+      queryParams.push(resolvedProductType);
+      filterClauses.push(`(${typeSql}) = $${queryParams.length}`);
+    } else if (effectiveCategory && effectiveCategory !== 'All') {
+      let mappedCategory = effectiveCategory;
+      const lowerCat = effectiveCategory.toLowerCase();
+      if (lowerCat.includes('laptop') || lowerCat.includes('monitor') || lowerCat.includes('desktop')) {
+        mappedCategory = 'Laptops & Desktops';
+      } else if (lowerCat.includes('phone') || lowerCat.includes('tablet') || lowerCat.includes('smartphone')) {
+        mappedCategory = 'Smartphones & Tablets';
+      } else if (lowerCat.includes('watch') || lowerCat.includes('wearable')) {
+        mappedCategory = 'Smart Wearables';
+      } else if (lowerCat.includes('audio') || lowerCat.includes('headphone')) {
+        mappedCategory = 'Audio Equipment';
+      } else if (lowerCat.includes('tv') || lowerCat.includes('television')) {
+        mappedCategory = 'Televisions';
+      }
+
+      queryParams.push(`%${mappedCategory}%`);
       filterClauses.push(`(c.name ILIKE $${queryParams.length} OR c.slug ILIKE $${queryParams.length})`);
     }
 
@@ -393,7 +434,13 @@ export const getAllProducts = async (
       const tokens = effectiveKeywords.split(/\s+/).filter(Boolean);
       tokens.forEach(token => {
         queryParams.push(`%${token}%`);
-        filterClauses.push(`(p.name ILIKE $${queryParams.length} OR p.brand ILIKE $${queryParams.length} OR p.specs_summary ILIKE $${queryParams.length})`);
+        // Single character queries: search only human-facing name and brand to prevent noisy model_no metadata matches.
+        // Queries of 2 or more characters: include model_no for useful model/model-code matching.
+        if (token.length === 1) {
+          filterClauses.push(`(p.name ILIKE $${queryParams.length} OR p.brand ILIKE $${queryParams.length})`);
+        } else {
+          filterClauses.push(`(p.name ILIKE $${queryParams.length} OR p.brand ILIKE $${queryParams.length} OR p.model_no ILIKE $${queryParams.length})`);
+        }
       });
     }
 
@@ -411,18 +458,80 @@ export const getAllProducts = async (
       ? `WHERE ${filterClauses.join(' AND ')}` 
       : '';
 
-    let orderByClause = 'ORDER BY p.product_id DESC';
-    if (sort === 'price_asc' || sort === 'cheapest') {
-      orderByClause = 'ORDER BY min_p.cheapest_price ASC NULLS LAST, p.product_id DESC';
-    } else if (sort === 'price_desc' || sort === 'dearest') {
-      orderByClause = 'ORDER BY min_p.cheapest_price DESC NULLS LAST, p.product_id DESC';
-    } else if (sort === 'price_drop') {
-      orderByClause = 'ORDER BY price_drop_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
-    } else if (sort === 'discount_desc') {
-      orderByClause = 'ORDER BY discount_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
-    } else if (sort === 'name_asc' || sort === 'name-az') {
-      orderByClause = 'ORDER BY p.name ASC, p.product_id DESC';
+    // Snapshot countParams BEFORE adding relevance and pagination params
+    const countParams = [...queryParams];
+
+    let relevanceSelect = '';
+    let featuredSelect = '';
+    let orderByClause = '';
+
+    if (cleanSearch.length > 0) {
+      queryParams.push(cleanSearch);
+      const exactParamIdx = queryParams.length;
+
+      queryParams.push(`${cleanSearch}%`);
+      const prefixParamIdx = queryParams.length;
+
+      queryParams.push(`%${cleanSearch}%`);
+      const containsParamIdx = queryParams.length;
+
+      relevanceSelect = `,
+        CASE
+          WHEN LOWER(p.brand) = LOWER($${exactParamIdx}) OR LOWER(p.name) = LOWER($${exactParamIdx}) THEN 1
+          WHEN p.brand ILIKE $${prefixParamIdx} THEN 2
+          WHEN p.name ILIKE $${prefixParamIdx} THEN 3
+          WHEN (
+            p.name ILIKE '% ' || $${prefixParamIdx} OR 
+            p.name ILIKE '%-' || $${prefixParamIdx} OR 
+            p.name ILIKE '%(' || $${prefixParamIdx} OR 
+            p.name ILIKE '%/' || $${prefixParamIdx} OR
+            p.name ILIKE '%[' || $${prefixParamIdx}
+          ) THEN 4
+          WHEN (p.brand ILIKE $${containsParamIdx} OR p.name ILIKE $${containsParamIdx}) THEN 5
+          WHEN (p.model_no ILIKE $${containsParamIdx}) THEN 6
+          ELSE 7
+        END AS search_rank`;
+
+      if (sort === 'price_asc' || sort === 'cheapest') {
+        orderByClause = 'ORDER BY search_rank ASC, min_p.cheapest_price ASC NULLS LAST, p.product_id DESC';
+      } else if (sort === 'price_desc' || sort === 'dearest') {
+        orderByClause = 'ORDER BY search_rank ASC, min_p.cheapest_price DESC NULLS LAST, p.product_id DESC';
+      } else if (sort === 'price_drop') {
+        orderByClause = 'ORDER BY search_rank ASC, price_drop_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
+      } else if (sort === 'discount_desc') {
+        orderByClause = 'ORDER BY search_rank ASC, discount_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
+      } else if (sort === 'name_asc' || sort === 'name-az') {
+        orderByClause = 'ORDER BY search_rank ASC, p.name ASC, p.product_id DESC';
+      } else {
+        // Default / Featured when searching preserves strict search relevance ranking
+        orderByClause = 'ORDER BY search_rank ASC, p.product_id DESC';
+      }
+    } else {
+      if (sort === 'price_asc' || sort === 'cheapest') {
+        orderByClause = 'ORDER BY min_p.cheapest_price ASC NULLS LAST, p.product_id DESC';
+      } else if (sort === 'price_desc' || sort === 'dearest') {
+        orderByClause = 'ORDER BY min_p.cheapest_price DESC NULLS LAST, p.product_id DESC';
+      } else if (sort === 'price_drop') {
+        orderByClause = 'ORDER BY price_drop_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
+      } else if (sort === 'discount_desc') {
+        orderByClause = 'ORDER BY discount_pct DESC, min_p.cheapest_price ASC, p.product_id DESC';
+      } else if (sort === 'name_asc' || sort === 'name-az') {
+        orderByClause = 'ORDER BY p.name ASC, p.product_id DESC';
+      } else {
+        // RECOMMENDED / FEATURED DEFAULT SORT: Deterministic product-type diversification before pagination
+        const typeBucketExpr = getRecommendedBucketSqlExpression('p', 'c');
+        featuredSelect = `,
+          ROW_NUMBER() OVER (
+            PARTITION BY (${typeBucketExpr}) 
+            ORDER BY p.product_id DESC
+          ) AS featured_rank,
+          (${typeBucketExpr}) AS type_bucket`;
+
+        orderByClause = 'ORDER BY featured_rank ASC, type_bucket ASC';
+      }
     }
+
+    const typeClassificationSql = getProductTypeSqlExpression('p', 'c');
 
     const querySql = `
       SELECT 
@@ -434,6 +543,7 @@ export const getAllProducts = async (
         p.image_url, 
         p.specs_summary, 
         c.name AS category_name,
+        (${typeClassificationSql}) AS product_type,
         min_p.cheapest_price,
         min_p.store_name,
         min_p.original_price,
@@ -457,6 +567,8 @@ export const getAllProducts = async (
             ELSE 0
           END, 0
         ) AS discount_pct
+        ${relevanceSelect}
+        ${featuredSelect}
       FROM products p
       JOIN categories c ON p.category_id = c.category_id
       LEFT JOIN (
@@ -489,7 +601,6 @@ export const getAllProducts = async (
     }));
 
     // Grab total rows matching same filters to serve frontend metadata ratios
-    let countParams = queryParams.slice(0, queryParams.length - 2);
     const countSql = `
       SELECT COUNT(*) 
       FROM products p 
@@ -542,11 +653,12 @@ export const getProductById = async (
     }
 
     // Retrieve central specifications
+    const typeClassificationSql = getProductTypeSqlExpression('p', 'c');
     const productSql = `
-      SELECT p.*, c.name AS category_name
+      SELECT p.*, c.name AS category_name, (${typeClassificationSql}) AS product_type
       FROM products p
       JOIN categories c ON p.category_id = c.category_id
-      WHERE p.product_id = $1;
+      WHERE p.product_id = $1 AND p.is_active = TRUE;
     `;
     const productResult = await db.query(productSql, [productId]);
 
@@ -645,10 +757,13 @@ export const searchProducts = async (
       effectiveMaxPrice = temp;
     }
 
-    const effectiveKeywords = nlParsed ? nlParsed.keywords : searchTerm.trim().slice(0, 200);
+    const cleanSearch = (searchTerm || '').trim().replace(/\s+/g, ' ');
+    const effectiveKeywords = (nlParsed?.keywords && nlParsed.keywords.trim().length > 0) 
+      ? nlParsed.keywords.trim().replace(/\s+/g, ' ') 
+      : cleanSearch;
 
     let queryParams: any[] = [];
-    let filterClauses: string[] = ['min_p.cheapest_price IS NOT NULL'];
+    let filterClauses: string[] = ['min_p.cheapest_price IS NOT NULL', 'p.is_active = TRUE'];
 
     if (nlParsed?.category) {
       queryParams.push(`%${nlParsed.category}%`);
@@ -659,7 +774,7 @@ export const searchProducts = async (
       const tokens = effectiveKeywords.split(/\s+/).filter(Boolean);
       tokens.forEach(token => {
         queryParams.push(`%${token}%`);
-        filterClauses.push(`(p.name ILIKE $${queryParams.length} OR p.brand ILIKE $${queryParams.length} OR p.specs_summary ILIKE $${queryParams.length})`);
+        filterClauses.push(`(p.name ILIKE $${queryParams.length} OR p.brand ILIKE $${queryParams.length} OR p.model_no ILIKE $${queryParams.length} OR c.name ILIKE $${queryParams.length} OR p.specs_summary ILIKE $${queryParams.length} OR p.description ILIKE $${queryParams.length})`);
       });
     }
 
@@ -675,6 +790,16 @@ export const searchProducts = async (
 
     const whereString = `WHERE ${filterClauses.join(' AND ')}`;
 
+    queryParams.push(cleanSearch);
+    const exactParamIdx = queryParams.length;
+
+    queryParams.push(`${cleanSearch}%`);
+    const prefixParamIdx = queryParams.length;
+
+    queryParams.push(`%${cleanSearch}%`);
+    const containsParamIdx = queryParams.length;
+
+    const typeClassificationSql = getProductTypeSqlExpression('p', 'c');
     const sql = `
       SELECT 
         p.product_id, 
@@ -685,8 +810,26 @@ export const searchProducts = async (
         p.image_url, 
         p.specs_summary, 
         c.name AS category_name,
+        (${typeClassificationSql}) AS product_type,
         min_p.cheapest_price,
-        min_p.store_name
+        min_p.store_name,
+        CASE
+          WHEN LOWER(p.brand) = LOWER($${exactParamIdx}) OR LOWER(p.name) = LOWER($${exactParamIdx}) THEN 1
+          WHEN p.brand ILIKE $${prefixParamIdx} THEN 2
+          WHEN p.name ILIKE $${prefixParamIdx} THEN 3
+          WHEN (
+            p.name ILIKE '% ' || $${prefixParamIdx} OR 
+            p.name ILIKE '%-' || $${prefixParamIdx} OR 
+            p.name ILIKE '%(' || $${prefixParamIdx} OR 
+            p.name ILIKE '%/' || $${prefixParamIdx} OR
+            p.name ILIKE '%[' || $${prefixParamIdx}
+          ) THEN 4
+          WHEN (p.brand ILIKE $${containsParamIdx} OR p.name ILIKE $${containsParamIdx}) THEN 5
+          WHEN (p.model_no ILIKE $${containsParamIdx}) THEN 6
+          WHEN (c.name ILIKE $${containsParamIdx}) THEN 7
+          WHEN (p.specs_summary ILIKE $${containsParamIdx} OR p.description ILIKE $${containsParamIdx}) THEN 8
+          ELSE 9
+        END AS search_rank
       FROM products p
       JOIN categories c ON p.category_id = c.category_id
       LEFT JOIN (
@@ -697,7 +840,7 @@ export const searchProducts = async (
         ORDER BY product_id, pp.price ASC
       ) min_p ON p.product_id = min_p.product_id
       ${whereString}
-      ORDER BY p.name ASC
+      ORDER BY search_rank ASC, p.name ASC
       LIMIT 15;
     `;
 
@@ -727,10 +870,16 @@ export const getProductPriceHistory = async (
       return next(new AppError('Invalid product identifier.', 400));
     }
 
+    // Verify catalog entry exists and is active
+    const productCheck = await db.query('SELECT product_id FROM products WHERE product_id = $1 AND is_active = TRUE;', [productId]);
+    if (productCheck.rows.length === 0) {
+      return next(new AppError('No gadget catalog entry found matching this identifier.', 404));
+    }
+
     const sql = `
-      SELECT ph.price, ph.recorded_at as date, s.name as store_name
+      SELECT ph.price, ph.recorded_at as date, COALESCE(s.name, 'Store') as store_name
       FROM price_history ph
-      JOIN stores s ON ph.store_id = s.store_id
+      LEFT JOIN stores s ON ph.store_id = s.store_id
       WHERE ph.product_id = $1
       ORDER BY ph.recorded_at ASC;
     `;
@@ -1214,7 +1363,7 @@ export const handleProductAiChat = async (
     const authedUserId = (req as any).user?.userId || (req as any).user?.user_id;
     const userIdentifier = authedUserId
       ? `user_${authedUserId}_${productId}`
-      : `session_${req.ip || req.headers['x-forwarded-for'] || 'anon'}_${productId}`;
+      : `session_${req.ip || 'anon'}_${productId}`;
 
     if (!checkAndIncrementRateLimit(userIdentifier)) {
       res.status(200).json({

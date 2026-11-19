@@ -5,12 +5,53 @@ import { GoogleShoppingService } from '../services/googleShoppingService.ts';
 import { QuotaTracker } from '../services/quotaTracker.ts';
 import { NormalizationService } from '../services/normalizationService.ts';
 import db from '../config/db.ts';
+import {
+  getAdminProducts,
+  createAdminProduct,
+  updateAdminProductMetadata,
+  deactivateAdminProduct,
+  reactivateAdminProduct,
+  getAdminCategories,
+  getAdminStores
+} from '../controllers/adminProductController.ts';
+import {
+  getAdminProductOffers,
+  createAdminProductOffer,
+  updateAdminOffer,
+  setAdminOfferAvailability
+} from '../controllers/adminOfferController.ts';
+import { getAdminSyncStatus } from '../controllers/adminSyncController.ts';
+import { updateAdminEmail } from '../controllers/adminAccountController.ts';
 
 const router = Router();
 
 // Protect all admin routes with JWT security and restrict to admin users
 router.use(protect);
 router.use(restrictTo('admin'));
+
+/**
+ * Admin Account Administration Endpoints
+ */
+router.patch('/account/email', updateAdminEmail);
+
+/**
+ * Product Management Administration Endpoints
+ */
+router.get('/categories', getAdminCategories);
+router.get('/stores', getAdminStores);
+router.get('/products', getAdminProducts);
+router.post('/products', createAdminProduct);
+router.patch('/products/:productId', updateAdminProductMetadata);
+router.patch('/products/:productId/deactivate', deactivateAdminProduct);
+router.patch('/products/:productId/reactivate', reactivateAdminProduct);
+
+/**
+ * Retailer Offer Management Administration Endpoints
+ */
+router.get('/products/:productId/offers', getAdminProductOffers);
+router.post('/products/:productId/offers', createAdminProductOffer);
+router.patch('/offers/:priceId', updateAdminOffer);
+router.patch('/offers/:priceId/availability', setAdminOfferAvailability);
 
 /**
  * POST /api/v1/admin/merge-variants
@@ -42,6 +83,12 @@ router.post('/merge-variants', async (req, res, next) => {
     if (client) client.release();
   }
 });
+
+/**
+ * GET /api/admin/sync-status
+ * Read-only telemetry for the Admin Sync Status dashboard.
+ */
+router.get('/sync-status', getAdminSyncStatus);
 
 /**
  * GET /api/v1/admin/report

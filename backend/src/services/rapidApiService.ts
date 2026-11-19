@@ -937,19 +937,32 @@ export class RapidApiService {
       if (prodCheck.rows.length > 0) {
         productId = prodCheck.rows[0].product_id;
         const existingSource = prodCheck.rows[0].data_source;
-        // Upgrade synthetic sources to live sources when live data comes in
-        const finalSource = (dataSource && dataSource !== 'synthetic') ? dataSource : (existingSource || 'synthetic');
-        
-        // Optional: Update specifications summary / image_url and backfill missing normalization values
-        await client.query(
-          `UPDATE products 
-           SET image_url = $1, specs_summary = $2, data_source = $3,
-               canonical_slug = COALESCE(canonical_slug, $4),
-               storage_variant = COALESCE(storage_variant, $5),
-               color_variant = COALESCE(color_variant, $6)
-           WHERE product_id = $7`,
-          [prod.image_url, prod.specs_summary, finalSource, canonicalSlug, storageVariant, colorVariant, productId]
-        );
+
+        if (existingSource === 'manual') {
+          // Manual product: preserve data_source = 'manual' and do not overwrite admin metadata (image_url, specs_summary, etc.)
+          await client.query(
+            `UPDATE products 
+             SET canonical_slug = COALESCE(canonical_slug, $1),
+                 storage_variant = COALESCE(storage_variant, $2),
+                 color_variant = COALESCE(color_variant, $3)
+             WHERE product_id = $4`,
+            [canonicalSlug, storageVariant, colorVariant, productId]
+          );
+        } else {
+          // Upgrade synthetic sources to live sources when live data comes in
+          const finalSource = (dataSource && dataSource !== 'synthetic') ? dataSource : (existingSource || 'synthetic');
+          
+          // Optional: Update specifications summary / image_url and backfill missing normalization values
+          await client.query(
+            `UPDATE products 
+             SET image_url = $1, specs_summary = $2, data_source = $3,
+                 canonical_slug = COALESCE(canonical_slug, $4),
+                 storage_variant = COALESCE(storage_variant, $5),
+                 color_variant = COALESCE(color_variant, $6)
+             WHERE product_id = $7`,
+            [prod.image_url, prod.specs_summary, finalSource, canonicalSlug, storageVariant, colorVariant, productId]
+          );
+        }
       } else {
         isNew = true;
         const prodInsert = await client.query(
@@ -984,33 +997,82 @@ export class RapidApiService {
         }
 
         // Upsert current pricing snapshots
-        await client.query(
-          `INSERT INTO product_prices (product_id, store_id, price, original_price, product_url, is_available, last_scraped_at)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        // If manual_override is TRUE: do NOT overwrite price, original_price, product_url, or last_scraped_at
+        // For genuinely new offers: manual_override defaults to FALSE
+        const priceUpsertRes = await client.query(
+          `INSERT INTO product_prices (product_id, store_id, price, original_price, product_url, is_available, manual_override, last_scraped_at)
+           VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
            ON CONFLICT (product_id, store_id) 
            DO UPDATE SET 
-             price = EXCLUDED.price, 
-             original_price = EXCLUDED.original_price, 
-             product_url = EXCLUDED.product_url,
-             last_scraped_at = NOW()`,
+             price = CASE WHEN product_prices.manual_override THEN product_prices.price ELSE EXCLUDED.price END, 
+             original_price = CASE WHEN product_prices.manual_override THEN product_prices.original_price ELSE EXCLUDED.original_price END, 
+             product_url = CASE WHEN product_prices.manual_override THEN product_prices.product_url ELSE EXCLUDED.product_url END,
+             last_scraped_at = CASE WHEN product_prices.manual_override THEN product_prices.last_scraped_at ELSE NOW() END
+           RETURNING manual_override, price, original_price, product_url, last_scraped_at`,
           [productId, storeId, off.price, off.original_price, off.product_url, off.is_available]
         );
 
-        // Also track price history log for analysis
-        await client.query(
-          `INSERT INTO price_history (product_id, store_id, price, recorded_at)
-           VALUES ($1, $2, $3, NOW())`,
-          [productId, storeId, off.price]
-        ).catch(() => {
-          // If the history table has slight structural differences or is locked, suppress history log error inside transaction
-        });
+        const savedOffer = priceUpsertRes.rows[0];
+        const isOfferLocked = Boolean(savedOffer?.manual_override);
+
+        // Deduplicated price history recording with daily heartbeat
+        // CRITICAL: If manual_override is TRUE, skip automated history insertion
+        // to prevent phantom unaccepted prices in price_history
+        if (!isOfferLocked) {
+          try {
+            const recentHistoryRes = await client.query(
+              `SELECT price, recorded_at 
+               FROM price_history 
+               WHERE product_id = $1 AND store_id = $2 
+               ORDER BY recorded_at DESC, history_id DESC 
+               LIMIT 1`,
+              [productId, storeId]
+            );
+
+            const lastHistory = recentHistoryRes.rows[0];
+            let shouldInsertHistory = false;
+
+            if (!lastHistory) {
+              // A. No previous history record exists for this retailer
+              shouldInsertHistory = true;
+            } else {
+              const lastPrice = parseFloat(lastHistory.price);
+              const priceDiff = Math.abs(lastPrice - off.price);
+              if (priceDiff > 0.01) {
+                // B. Retailer price changed
+                shouldInsertHistory = true;
+              } else {
+                // C. Unchanged price: record at most once every 24 hours as a heartbeat
+                const lastRecordedTs = new Date(lastHistory.recorded_at).getTime();
+                const hoursSinceLastRecord = (Date.now() - lastRecordedTs) / (1000 * 60 * 60);
+                if (hoursSinceLastRecord >= 24) {
+                  shouldInsertHistory = true;
+                }
+              }
+            }
+
+            if (shouldInsertHistory) {
+              await client.query(
+                `INSERT INTO price_history (product_id, store_id, price, recorded_at)
+                 VALUES ($1, $2, $3, NOW())`,
+                [productId, storeId, off.price]
+              );
+            }
+          } catch (histErr: any) {
+            console.warn(`[Price History Error] Failed to record price history for product_id=${productId}, store_id=${storeId}, price=${off.price}:`, histErr.message);
+          }
+        }
+
+        const effectivePrice = isOfferLocked && savedOffer ? parseFloat(savedOffer.price) : off.price;
+        const effectiveOrigPrice = isOfferLocked && savedOffer ? (savedOffer.original_price ? parseFloat(savedOffer.original_price) : effectivePrice) : off.original_price;
+        const effectiveProductUrl = isOfferLocked && savedOffer ? savedOffer.product_url : off.product_url;
 
         processedPrices.push({
           store_name: off.store_name,
-          price: off.price,
-          original_price: off.original_price,
-          discount: off.original_price > off.price ? ((off.original_price - off.price) / off.original_price) * 100 : 0,
-          product_url: off.product_url
+          price: effectivePrice,
+          original_price: effectiveOrigPrice,
+          discount: effectiveOrigPrice > effectivePrice ? ((effectiveOrigPrice - effectivePrice) / effectiveOrigPrice) * 100 : 0,
+          product_url: effectiveProductUrl
         });
       }
 

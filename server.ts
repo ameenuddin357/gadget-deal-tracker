@@ -1,10 +1,24 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 
-// Load environmental variables
-dotenv.config();
+// Centralized Environment Architecture:
+// - Runtime / AI Studio Secrets (process.env.JWT_SECRET, etc.) have highest priority.
+// - In development (NODE_ENV !== 'production'): .env.local is an optional local fallback only.
+//   It does NOT override runtime environment variables (override: false).
+// - In production (NODE_ENV === 'production'): .env.local is NOT loaded; configuration is supplied strictly by hosting platform environment variables.
+// - validateEnvironment() validates that JWT_SECRET is present and secure (>= 32 chars).
+if (process.env.NODE_ENV !== 'production') {
+  if (fs.existsSync('.env.local')) {
+    dotenv.config({ path: '.env.local', override: false });
+  }
+}
+
+// Run startup environment configuration checks
+import { validateEnvironment } from './backend/src/config/validateEnv.ts';
+validateEnvironment();
 
 // Import central controllers & sub-routers from MVC Backend
 import authRouter from './backend/src/routes/authRoutes.ts';
@@ -15,10 +29,11 @@ import historyRouter from './backend/src/routes/historyRoutes.ts';
 import shoppingApiRouter from './backend/src/routes/shoppingApiRoutes.ts';
 import adminRouter from './backend/src/routes/adminRoutes.ts';
 import dashboardRouter from './backend/src/routes/dashboardRoutes.ts';
-import { errorHandler } from './backend/src/middleware/errorHandler.ts';
+import { errorHandler, AppError } from './backend/src/middleware/errorHandler.ts';
 import { globalApiLimiter } from './backend/src/middleware/rateLimiter.ts';
-import { initializeDatabase } from './backend/src/config/initDb.ts';
+import { verifyDatabaseSchema } from './backend/src/config/initDb.ts';
 import { startScheduler } from './backend/src/services/scheduler.ts';
+import helmet from 'helmet';
 
 async function startServer() {
   console.log('[Full-Stack Server] Initializing process context...');
@@ -26,13 +41,46 @@ async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
-  // Initialize database schema
+  // Explicitly disable Express framework fingerprinting
+  app.disable('x-powered-by');
+
+  // Configure reverse-proxy trust policy conservatively via TRUST_PROXY_HOPS
+  const rawHops = process.env.TRUST_PROXY_HOPS;
+  if (rawHops !== undefined && rawHops.trim() !== '') {
+    const parsedHops = parseInt(rawHops.trim(), 10);
+    if (!isNaN(parsedHops) && parsedHops >= 0 && parsedHops <= 10) {
+      if (parsedHops > 0) {
+        app.set('trust proxy', parsedHops);
+        console.log(`[Security] Reverse proxy trust enabled for ${parsedHops} hop(s).`);
+      } else {
+        app.set('trust proxy', false);
+        console.log('[Security] Reverse proxy trust explicitly disabled (0 hops).');
+      }
+    } else {
+      console.warn(`[Security] Invalid TRUST_PROXY_HOPS value "${rawHops}". Must be an integer between 0 and 10. Leaving trust proxy disabled.`);
+      app.set('trust proxy', false);
+    }
+  } else {
+    // Default: disabled in local development / direct environments
+    app.set('trust proxy', false);
+  }
+
+  // Mount Helmet with conservative baseline headers preserving development, preview iframe, and external asset compatibility
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    frameguard: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // Verify database schema readiness (strictly read-only)
   try {
-    await initializeDatabase();
-    console.log('[PostgreSQL] Database schema initial check done. Launching background scheduler.');
+    await verifyDatabaseSchema();
     startScheduler();
-  } catch (err) {
-    console.error('[PostgreSQL] Database initialization failed:', err);
+  } catch (err: any) {
+    console.error('[PostgreSQL Error] Database schema readiness check failed:', err?.message || 'Unknown database error');
+    process.exit(1);
   }
 
   // 1. Core Request Middlewares: Body parser with 100kb limit & rate limiting
@@ -60,6 +108,16 @@ async function startServer() {
       message: 'Unifed Full-Stack E-Commerce Portal is live and connected!',
       timestamp: new Date().toISOString()
     });
+  });
+
+  // Catch-all 404 for unmatched /api routes before Vite middleware / static asset serving
+  app.all('/api/*', (req, res, next) => {
+    next(new AppError(`Cannot find requested API endpoint: [${req.method}] ${req.originalUrl}`, 404));
+  });
+
+  // Explicitly deny public access to backend bundle, source maps, and server build directory
+  app.all(['/dist-server', '/dist-server/*', '/server.cjs', '/server.cjs.map', '/*.cjs', '/*.cjs.map'], (req, res) => {
+    res.status(404).send('Not Found');
   });
 
   // 3. Vite Development Middleware Integration vs static production bundle serving

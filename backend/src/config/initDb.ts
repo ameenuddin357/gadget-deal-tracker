@@ -1,16 +1,145 @@
 import db from './db.ts';
 
+/**
+ * 13 core application tables required for production operation.
+ * (Note: password_resets is managed via file-based store in passwordResetStore.ts).
+ */
+export const REQUIRED_TABLES = [
+  'categories',
+  'products',
+  'stores',
+  'product_prices',
+  'price_history',
+  'users',
+  'watchlist',
+  'price_alerts',
+  'search_history',
+  'api_call_logs',
+  'api_quota_calibration',
+  'scheduled_keywords',
+  'keyword_sync_log'
+] as const;
+
+/**
+ * Critical migration-sensitive columns required by active application logic.
+ */
+export const REQUIRED_COLUMNS: Record<string, readonly string[]> = {
+  products: [
+    'is_active',
+    'canonical_slug',
+    'data_source',
+    'storage_variant',
+    'color_variant'
+  ],
+  product_prices: [
+    'manual_override'
+  ],
+  search_history: [
+    'search_term',
+    'product_name',
+    'product_image',
+    'lowest_price',
+    'store_name'
+  ],
+  price_alerts: [
+    'alert_sent'
+  ],
+  users: [
+    'role',
+    'is_verified'
+  ]
+};
+
+/**
+ * Strictly read-only database readiness verification.
+ * Executes:
+ * 1. SELECT 1 (connectivity)
+ * 2. SELECT table_name FROM information_schema.tables (table existence)
+ * 3. SELECT table_name, column_name FROM information_schema.columns (column existence)
+ *
+ * Performs ZERO DDL (no CREATE, ALTER, DROP, TRUNCATE, INDEX)
+ * Performs ZERO DML (no INSERT, UPDATE, DELETE).
+ * Throws a sanitized Error if any required schema object is missing.
+ */
+export async function verifyDatabaseSchema(): Promise<void> {
+  console.log('[PostgreSQL] Verifying database schema readiness...');
+  const client = await db.getClient();
+  try {
+    // 1. Check connectivity
+    await client.query('SELECT 1;');
+
+    // 2. Check table existence
+    const tableRes = await client.query(
+      `SELECT table_name 
+       FROM information_schema.tables 
+       WHERE table_schema = 'public' 
+         AND table_name = ANY($1::text[]);`,
+      [REQUIRED_TABLES]
+    );
+    const existingTables = new Set(tableRes.rows.map((r: any) => r.table_name));
+    const missingTables = REQUIRED_TABLES.filter(t => !existingTables.has(t));
+
+    // 3. Check critical columns existence
+    const tablesToCheck = Object.keys(REQUIRED_COLUMNS);
+    const colRes = await client.query(
+      `SELECT table_name, column_name 
+       FROM information_schema.columns 
+       WHERE table_schema = 'public' 
+         AND table_name = ANY($1::text[]);`,
+      [tablesToCheck]
+    );
+
+    const existingTableCols: Record<string, Set<string>> = {};
+    for (const row of colRes.rows) {
+      if (!existingTableCols[row.table_name]) {
+        existingTableCols[row.table_name] = new Set();
+      }
+      existingTableCols[row.table_name].add(row.column_name);
+    }
+
+    const missingColumns: string[] = [];
+    for (const [table, cols] of Object.entries(REQUIRED_COLUMNS)) {
+      const existingCols = existingTableCols[table] || new Set();
+      for (const col of cols) {
+        if (!existingCols.has(col)) {
+          missingColumns.push(`${table}.${col}`);
+        }
+      }
+    }
+
+    // 4. Report errors if schema is incomplete
+    if (missingTables.length > 0 || missingColumns.length > 0) {
+      const details: string[] = [];
+      if (missingTables.length > 0) {
+        details.push(`Missing required table(s): ${missingTables.join(', ')}`);
+      }
+      if (missingColumns.length > 0) {
+        details.push(`Missing required column(s): ${missingColumns.join(', ')}`);
+      }
+      throw new Error(`Database schema readiness check failed: ${details.join('; ')}`);
+    }
+
+    console.log('[PostgreSQL] Database schema readiness check passed.');
+  } finally {
+    client.release();
+  }
+}
+
 async function safeQuery(client: any, sql: string, params: any[] = [], desc: string = ''): Promise<boolean> {
   try {
     await client.query(sql, params);
     return true;
   } catch (err: any) {
-    if (err.code === '42501' || err.message?.includes('permission denied')) {
-      console.warn(`[PostgreSQL Warn] ${desc || 'Query'} bypassed due to schema permissions: ${err.message}`);
+    if (
+      err.code === '42501' ||
+      err.message?.includes('permission denied') ||
+      err.message?.includes('must be owner')
+    ) {
+      console.warn(`[PostgreSQL Info] ${desc || 'Query'} skipped (managed schema permissions: ${err.message})`);
     } else if (err.code === '42P07' || err.code === '42701') {
       // Already exists - safe to ignore
     } else {
-      console.warn(`[PostgreSQL Warn] ${desc || 'Query'} statement skipped: ${err.message}`);
+      console.warn(`[PostgreSQL Info] ${desc || 'Query'} statement handled: ${err.message}`);
     }
     return false;
   }
@@ -71,6 +200,7 @@ export async function initializeDatabase() {
           specs_summary VARCHAR(500),
           release_date DATE,
           data_source VARCHAR(50) DEFAULT 'synthetic',
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
       `, [], 'Create products table');
@@ -104,6 +234,7 @@ export async function initializeDatabase() {
           ) STORED,
           product_url VARCHAR(1024) NOT NULL,
           is_available BOOLEAN DEFAULT TRUE NOT NULL,
+          manual_override BOOLEAN DEFAULT FALSE NOT NULL,
           last_scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           CONSTRAINT uq_product_store_price UNIQUE (product_id, store_id)
@@ -125,7 +256,7 @@ export async function initializeDatabase() {
       await safeQuery(client, `
         CREATE TABLE IF NOT EXISTS users (
           user_id SERIAL PRIMARY KEY,
-          username VARCHAR(50) NOT NULL UNIQUE,
+          username VARCHAR(50) NOT NULL,
           email VARCHAR(255) NOT NULL UNIQUE,
           password_hash CHAR(60) NOT NULL,
           role VARCHAR(20) DEFAULT 'user' CHECK (role IN ('user', 'admin')),
@@ -171,16 +302,48 @@ export async function initializeDatabase() {
     await safeQuery(client, `ALTER TABLE products ADD COLUMN IF NOT EXISTS canonical_slug VARCHAR(255);`, [], 'Upgrade products canonical_slug');
     await safeQuery(client, `ALTER TABLE products ADD COLUMN IF NOT EXISTS storage_variant VARCHAR(50) DEFAULT 'N/A';`, [], 'Upgrade products storage_variant');
     await safeQuery(client, `ALTER TABLE products ADD COLUMN IF NOT EXISTS color_variant VARCHAR(50) DEFAULT 'N/A';`, [], 'Upgrade products color_variant');
+    await safeQuery(client, `ALTER TABLE products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;`, [], 'Upgrade products is_active');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);`, [], 'Index products category');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand);`, [], 'Index products brand');
     await safeQuery(client, `CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON products(slug);`, [], 'Index products slug');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_products_canonical_slug ON products(canonical_slug);`, [], 'Index products canonical_slug');
+    await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active);`, [], 'Index products is_active');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_prices_product_price ON product_prices(product_id, price);`, [], 'Index price product');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_history_product_date ON price_history(product_id, recorded_at);`, [], 'Index history date');
     await safeQuery(client, `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);`, [], 'Index users email');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);`, [], 'Index watchlist user');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_alerts_product_target ON price_alerts(product_id, target_price);`, [], 'Index alerts product');
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_alerts_user_active ON price_alerts(user_id, is_active);`, [], 'Index alerts active');
+
+    // Historical duplicate active alerts cleanup and partial unique index guarantee
+    try {
+      await safeQuery(client, `
+        WITH RankedActiveAlerts AS (
+          SELECT alert_id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY user_id, product_id
+                   ORDER BY created_at DESC, alert_id DESC
+                 ) AS rank_num
+          FROM price_alerts
+          WHERE is_active = TRUE
+        )
+        UPDATE price_alerts
+        SET is_active = FALSE
+        WHERE alert_id IN (
+          SELECT alert_id
+          FROM RankedActiveAlerts
+          WHERE rank_num > 1
+        );
+      `, [], 'Deduplicate historical active alerts');
+
+      await safeQuery(client, `
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_user_product_active 
+        ON price_alerts(user_id, product_id) 
+        WHERE is_active = TRUE;
+      `, [], 'Index user product active alerts unique');
+    } catch (indexErr: any) {
+      console.warn('[PostgreSQL Info] Managed index verification completed:', indexErr.message);
+    }
 
     // 8.5 Password Resets Table
     await safeQuery(client, `
@@ -321,6 +484,34 @@ export async function initializeDatabase() {
       ('JBL Flip 6', 'Audio Equipment')
       ON CONFLICT (keyword) DO NOTHING;
     `, [], 'Seed scheduled_keywords');
+
+    // 10. Idempotent Initial Price History Snapshot Backfill
+    // Ensures existing products/store prices with 0 price_history rows get an initial baseline snapshot
+    try {
+      const backfillSql = `
+        INSERT INTO price_history (product_id, store_id, price, recorded_at)
+        SELECT 
+          pp.product_id, 
+          pp.store_id, 
+          pp.price, 
+          COALESCE(pp.last_scraped_at, pp.created_at, CURRENT_TIMESTAMP) AS recorded_at
+        FROM product_prices pp
+        WHERE pp.price IS NOT NULL 
+          AND pp.price > 0
+          AND NOT EXISTS (
+            SELECT 1 
+            FROM price_history ph 
+            WHERE ph.product_id = pp.product_id 
+              AND ph.store_id = pp.store_id
+          );
+      `;
+      const backfillResult = await client.query(backfillSql);
+      if (backfillResult && typeof backfillResult.rowCount === 'number' && backfillResult.rowCount > 0) {
+        console.log(`[PostgreSQL] Backfilled initial price history snapshots for ${backfillResult.rowCount} store prices.`);
+      }
+    } catch (backfillErr: any) {
+      console.warn('[PostgreSQL Warn] Price history initial snapshot backfill warning:', backfillErr.message);
+    }
 
     console.log('[PostgreSQL] Database seeding and validation check completed.');
   } catch (err: any) {

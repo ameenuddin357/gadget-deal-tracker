@@ -4,9 +4,10 @@ import { useAuth } from '../context/AuthContext';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
+  requiredRole?: string;
 }
 
-export default function ProtectedRoute({ children }: ProtectedRouteProps) {
+export default function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
@@ -23,8 +24,9 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
 
   if (!user) {
     const getAuthMessage = (path: string): string => {
-      if (path === '/' || path.startsWith('/dashboard')) return 'Please log in to access your dashboard.';
-      if (path.startsWith('/watchlist')) return 'Please log in to use your watchlist.';
+      if (path.startsWith('/admin')) return 'Administrator privileges required. Please sign in with an admin account.';
+      if (path === '/' || path.startsWith('/dashboard')) return 'Please log in to access Home.';
+      if (path.startsWith('/watchlist')) return 'Please log in to view your Saved Gadgets.';
       if (path.startsWith('/compare')) return 'Please log in to use product comparison.';
       if (path.startsWith('/alerts')) return 'Please log in to create price alerts.';
       if (path.startsWith('/history')) return 'Please log in to view your search history.';
@@ -33,6 +35,12 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
 
     // Save previous path location and message to display on login page
     return <Navigate to="/login" state={{ from: location, message: getAuthMessage(location.pathname) }} replace />;
+  }
+
+  // Validate user role if a specific role is required
+  if (requiredRole && user.role !== requiredRole) {
+    // Authenticated non-admin attempting restricted route -> redirect safely to dashboard
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <>{children}</>;

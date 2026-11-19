@@ -134,7 +134,7 @@ export const SearchHistoryComponent: React.FC<SearchHistoryComponentProps> = ({
               id={`history-chip-delete-${index}`}
               onClick={(e) => handleDeleteItem(term, e)}
               className="cursor-pointer pr-1.5 pl-0.5 py-1 text-slate-400 hover:text-rose-600 transition-colors"
-              title={`Remove "${term}" from history`}
+              title={`Remove "${term}" from search history`}
             >
               <X className="w-2.5 h-2.5" />
             </button>

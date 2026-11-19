@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { KeyRound, Mail, User, AlertCircle, ArrowRight, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { KeyRound, Mail, User, AlertCircle, ArrowRight, CheckCircle, Eye, EyeOff, Send, Check } from 'lucide-react';
+import { resendVerificationEmail } from '../services/api';
 
 export default function RegisterPage() {
   const { register, user, error, clearError } = useAuth();
@@ -13,6 +14,11 @@ export default function RegisterPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Email verification post-registration state
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
+  const [isResending, setIsResending] = useState(false);
+  const [resendStatus, setResendStatus] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -26,6 +32,7 @@ export default function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
+    setResendStatus(null);
 
     if (!username || !email || !password || !confirmPassword) {
       setLocalError("Please fill in all registration fields.");
@@ -44,16 +51,98 @@ export default function RegisterPage() {
 
     setIsSubmitting(true);
     try {
-      await register(username, email, password);
+      const normalizedEmail = email.toLowerCase().trim();
+      const res = await register(username, normalizedEmail, password);
+      // When verification is required (EMAIL_VERIFICATION_ENABLED=true), show verification screen
+      if (res?.verificationRequired) {
+        setRegisteredEmail(normalizedEmail);
+      } else {
+        // When verification is disabled, redirect to normal app/home
+        navigate('/', { replace: true });
+      }
     } catch (err: any) {
-      // Errors are set in AuthContext and handled automatically in the UI
+      // Error message is displayed in AuthContext or localError
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleResend = async () => {
+    if (!registeredEmail || isResending) return;
+    setIsResending(true);
+    setResendStatus(null);
+    try {
+      await resendVerificationEmail(registeredEmail);
+      setResendStatus("A new verification link has been sent to your email.");
+    } catch (err: any) {
+      setResendStatus("Unable to resend verification email right now. Please try again shortly.");
+    } finally {
+      setIsResending(false);
+    }
+  };
+
+  // If successfully registered, show verification instructions
+  if (registeredEmail) {
+    return (
+      <div className="flex-1 flex flex-col justify-center items-center py-6 sm:py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-slate-200/80 shadow-sm p-8 flex flex-col gap-6 text-center">
+          <div className="mx-auto h-14 w-14 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600">
+            <Mail className="w-7 h-7 animate-pulse text-indigo-600" />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <h2 className="text-2xl font-display font-bold text-slate-800 tracking-tight">
+              Check your email
+            </h2>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              We sent a verification link to <strong className="text-slate-800">{registeredEmail}</strong>. Please verify your email before signing in.
+            </p>
+            <p className="text-xs text-slate-500">
+              The verification link is valid for 60 minutes.
+            </p>
+          </div>
+
+          {resendStatus && (
+            <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3 rounded-lg text-xs flex items-center justify-center gap-2">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{resendStatus}</span>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 pt-2">
+            <Link
+              to="/login"
+              id="btn-back-to-login"
+              className="w-full bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 transition-all text-white font-mono text-xs font-medium py-3 rounded-lg flex items-center justify-center gap-2"
+            >
+              <span>Back to Sign In</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+
+            <button
+              type="button"
+              id="btn-resend-verification"
+              onClick={handleResend}
+              disabled={isResending}
+              className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-mono text-xs font-medium py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {isResending ? (
+                <span className="h-4 w-4 border-2 border-slate-600 border-t-transparent rounded-full animate-spin"></span>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Resend Verification Email</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex-1 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8 bg-slate-50 min-h-[80vh]">
+    <div className="flex-1 flex flex-col justify-center items-center py-6 sm:py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md w-full bg-white rounded-2xl border border-slate-200/80 shadow-sm p-8 flex flex-col gap-6">
         
         {/* Logo and Greeting Info Header */}
@@ -175,7 +264,7 @@ export default function RegisterPage() {
               <span className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
             ) : (
               <>
-                <span>Provision My Account</span>
+                <span>Create Account</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </>
             )}

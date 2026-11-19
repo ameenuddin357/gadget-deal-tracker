@@ -33,8 +33,7 @@ export function createRateLimiter(options: RateLimitOptions) {
     max,
     message = 'Too many requests from this IP or account, please try again later.',
     keyGenerator = (req: Request) => {
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : req.ip) || 'unknown_ip';
+      const ip = req.ip || 'unknown_ip';
       const userId = (req as any).user?.userId ? `_usr_${(req as any).user.userId}` : '';
       return `${req.baseUrl || req.path}:${ip}${userId}`;
     }
@@ -111,3 +110,12 @@ export const globalApiLimiter = createRateLimiter({
   max: 300,
   message: 'Too many requests. Please slow down.'
 });
+
+// 5. Email Verification Resend Limiter (prevents email flooding and SMTP quota exhaustion)
+// 5 attempts per 15 minutes per IP
+export const verificationResendLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many verification resend requests. Please wait 15 minutes before trying again.'
+});
+
