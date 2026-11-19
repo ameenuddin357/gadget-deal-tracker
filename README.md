@@ -1,170 +1,223 @@
-# Gadget Tracker Pro
+# Gadget Deal Tracker
 
-Full-stack gadget price comparison, saved gadgets, price history, price alerts, and admin catalogue management portal built with **React + Vite + Tailwind CSS**, **Express + TypeScript**, and **PostgreSQL**.
+A full-stack gadget price comparison platform that helps users discover products, compare prices, track price history, manage watchlists, and monitor price changes through alerts.
 
----
+Built with React, TypeScript, Node.js, Express, and PostgreSQL, the application also integrates AI-powered deal assistance and external shopping APIs.
 
-## Architecture Overview
+## Features
 
-Gadget Tracker Pro uses a **unified full-stack Node.js server** (`server.ts`):
-- **Single root `package.json`** manages both frontend (`src/`) and backend (`backend/src/`) dependencies.
-- **Development mode (`npm run dev`)**: Express mounts the backend REST API (`/api/*`) and Vite's frontend middleware together on **http://localhost:3000**.
-- **Production mode (`npm run build` + `npm start`)**: Vite builds the frontend into `dist/`, `esbuild` bundles the backend into `dist-server/server.cjs`, and Express serves both the API and the static SPA on the configured `PORT` (default `3000`).
+### User Features
+- Product Discovery: Browse and search gadgets through the product catalogue.
+- Price Comparison: Compare gadget prices across available shopping sources.
+- Product Details: View product information, pricing, and historical price trends.
+- Price History: Track changes in product prices over time.
+- Watchlist: Save and manage products you are interested in.
+- Price Alerts: Set alerts to monitor price changes.
+- Dashboard: Access product activity, saved gadgets, and relevant insights.
+- AI Deal Assistance: Get AI-powered assistance when evaluating gadget deals.
+- Authentication: Register, log in, and manage user accounts.
 
----
+### Admin Features
+- Admin Dashboard: Manage and monitor catalogue activity.
+- Product Management: Manage products in the catalogue.
+- Offer Management: Manage product offers.
+- Catalogue Synchronization: Monitor and manage product synchronization.
 
-## Windows Local Setup Instructions
+## Technology Stack
 
-### 1. Required Software and Versions
-- **Node.js**: `v20.x` or `v22.x` LTS (tested on Node `v22.23.2` and npm `10.9.8`) — download from [nodejs.org](https://nodejs.org/).
-- **npm**: `v10.x` (bundled with Node.js).
-- **PostgreSQL**: `v15+` or `v16+` (either local PostgreSQL for Windows or a hosted PostgreSQL database such as Neon / Render / Supabase).
-- **Git** (optional, for pushing to GitHub): [git-scm.com](https://git-scm.com/).
-- **Terminal**: Windows PowerShell, Windows Terminal, or VS Code integrated terminal.
+| Layer | Technologies |
+|---|---|
+| Frontend | React, TypeScript, Vite |
+| Styling | Tailwind CSS |
+| Backend | Node.js, Express, TypeScript |
+| Database | PostgreSQL |
+| Authentication | JWT, bcryptjs |
+| AI Integration | Google Gemini API |
+| Shopping Data | RapidAPI integrations |
+| Charts | Recharts |
+| HTTP Client | Axios |
+| Email | Nodemailer (optional configuration) |
+| Build Tools | Vite, esbuild |
 
-Verify Node and npm in PowerShell:
-```powershell
-node -v
-npm -v
+## Application Architecture
+
+The application follows a unified full-stack architecture.
+
+- The React frontend is located in `src/`.
+- The Express backend is located in `backend/src/`.
+- The root `server.ts` starts the application and connects the frontend and backend.
+- PostgreSQL stores application data.
+- External APIs provide shopping data and AI functionality.
+
+**Development:** Express and Vite run together through a single development server.
+
+**Production:** Vite builds the frontend into `dist/`, while esbuild bundles the backend into `dist-server/`. Express serves the frontend and backend API.
+
+## Project Structure
+
+```text
+gadget-deal-tracker/
+│
+├── backend/
+│   └── src/
+│       ├── config/
+│       ├── controllers/
+│       ├── middleware/
+│       ├── routes/
+│       ├── services/
+│       └── utils/
+│
+├── src/
+│   ├── components/
+│   ├── context/
+│   ├── pages/
+│   │   └── admin/
+│   ├── services/
+│   └── utils/
+│
+├── server.ts
+├── package.json
+├── package-lock.json
+├── vite.config.ts
+├── tsconfig.json
+├── .env.example
+└── README.md
 ```
 
-### 2. Extract the ZIP
-1. Right-click `gadget-tracker-pro.zip` in File Explorer -> **Extract All...** (or extract to a clean path without special characters, e.g., `C:\Projects\gadget-tracker-pro`).
-2. Open PowerShell in the extracted project folder:
-   ```powershell
-   cd C:\Projects\gadget-tracker-pro
-   ```
+## Getting Started
 
-### 3. Install Frontend Dependencies
-All frontend (`src/`) and backend (`backend/src/`) dependencies are managed together in the **root `package.json`** and pinned in `package-lock.json`.
+### Prerequisites
 
-From the project root directory, run:
-```powershell
+- Node.js 20.x or 22.x
+- npm
+- PostgreSQL 15 or later
+- Git
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/ameenuddin357/gadget-deal-tracker.git
+cd gadget-deal-tracker
+```
+
+### 2. Install Dependencies
+
+```bash
 npm install
 ```
 
-### 4. Install Backend Dependencies
-Backend packages (`express`, `pg`, `bcryptjs`, `jsonwebtoken`, `helmet`, `nodemailer`, `tsx`, `esbuild`, etc.) are **already installed by the root `npm install` above**.
-- You do **not** need to run `npm install` inside `backend/`.
-- `backend/package.json` is preserved only as legacy reference metadata; the unified server runs exclusively from the root `package.json`.
+### 3. Configure Environment Variables
 
-### 5. Required Environment Variables
-Create a `.env.local` file in the project root by copying `.env.example`:
-```powershell
-Copy-Item .env.example .env.local
+Create a local environment file from the example:
+
+```bash
+copy .env.example .env.local
 ```
 
-Open `.env.local` and configure the values below. **Never commit `.env.local` or real secrets to GitHub.**
+Configure the required values in `.env.local`:
 
-#### A. Required for Local Development (`.env.local`)
-| Variable | Local Example / Requirement | Purpose |
-|---|---|---|
-| `NODE_ENV` | `development` | Enables Vite middleware and local `.env.local` loading |
-| `PORT` | `3000` | Port for both frontend and backend API |
-| `DATABASE_URL` | `postgresql://postgres:YOUR_LOCAL_PASSWORD@localhost:5432/deal_tracker` | Primary PostgreSQL connection string |
-| `DB_SSL` | `false` *(for local Postgres)* / `true` *(for hosted Postgres)* | Enables TLS for PostgreSQL (`true` exact lowercase) |
-| `DB_SSL_REJECT_UNAUTHORIZED` | `true` *(or `false` only if your host uses self-signed certs)* | Evaluated only when `DB_SSL=true` |
-| `DB_POOL_MAX` | `10` | Optional pool size (`1`–`20`, default `10`) |
-| `JWT_SECRET` | Any random string **>= 32 characters** | Required at startup to sign/verify auth JWTs |
-| `EMAIL_VERIFICATION_ENABLED` | `false` | **Keep `false`** (no external paid email service required) |
-| `TRUST_PROXY_HOPS` | `0` | Direct local connections (no reverse proxy) |
+| Variable | Purpose |
+|---|---|
+| `NODE_ENV` | Application environment |
+| `PORT` | Server port |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `DB_SSL` | Database SSL configuration |
+| `JWT_SECRET` | Authentication secret (minimum 32 characters) |
+| `EMAIL_VERIFICATION_ENABLED` | Keep `false` unless email verification is configured |
+| `TRUST_PROXY_HOPS` | Trusted reverse proxy configuration |
 
-*(Optional local features — leave as placeholder if unused: `GEMINI_API_KEY` for AI Deal Advisor; `RAPIDAPI_KEY`, `RAPIDAPI_HOST`, `GOOGLE_SHOPPING_API_HOST`, `FLIPKART_API_HOST` for admin-only sync.)*
+Optional integrations:
 
-Generate a secure random `JWT_SECRET` in PowerShell:
-```powershell
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+- `GEMINI_API_KEY` – AI-powered features.
+- `RAPIDAPI_KEY` – External shopping API access.
+- `RAPIDAPI_HOST` – Amazon shopping API host.
+- `GOOGLE_SHOPPING_API_HOST` – Google Shopping API host.
+- `FLIPKART_API_HOST` – Flipkart API host.
+
+Refer to `.env.example` for the complete configuration.
+
+**Security:** Never commit `.env.local`, database passwords, API keys, or JWT secrets to GitHub.
+
+### 4. Configure PostgreSQL
+
+Create a PostgreSQL database and configure its connection string in `.env.local`.
+
+Example:
+
+```env
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/deal_tracker
+DB_SSL=false
 ```
 
-#### B. Required Only for Production (e.g., Render / Cloud Hosting)
-In production (`NODE_ENV=production`), `.env.local` is **ignored**; configure these in your hosting provider's Environment Variables dashboard:
-| Variable | Production Setting | Notes |
-|---|---|---|
-| `NODE_ENV` | `production` | Serves built `dist/` static frontend and hides dev logs |
-| `PORT` | Provided by host (or `3000`) | Server binds to `0.0.0.0:$PORT` |
-| `DATABASE_URL` | Managed PostgreSQL connection URL | Primary production DB connection |
-| `DB_SSL` | `true` | Required by most managed PostgreSQL hosts |
-| `DB_SSL_REJECT_UNAUTHORIZED` | `true` *(set `false` only if host requires it)* | Strict TLS certificate check by default |
-| `JWT_SECRET` | Unique random secret (`48–64+` chars) | Must differ from local dev secret |
-| `EMAIL_VERIFICATION_ENABLED` | `false` | Keeps email verification disabled without SMTP |
-| `TRUST_PROXY_HOPS` | `1` | Required behind Render/Nginx reverse proxy for accurate rate-limit IPs |
-| `APP_URL` | `https://your-production-domain.onrender.com` | Canonical public URL |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | Optional | Only needed if you later configure SMTP for password reset / price alert emails |
-| `EMAIL_VERIFICATION_SECRET` | Optional | Only required if you ever set `EMAIL_VERIFICATION_ENABLED=true` (must be >= 32 chars and differ from `JWT_SECRET`) |
+For a new database, initialize the required schema using the project's database initialization procedure. For an existing database, ensure the required schema is available.
 
-### 6. Configure the Database Connection
-`backend/src/config/db.ts` connects using:
-1. **`DATABASE_URL`** (recommended for both local PostgreSQL and hosted databases), **or**
-2. Individual fallback variables (`SQL_HOST`, `DB_PORT`, `SQL_USER`, `SQL_PASSWORD`, `SQL_DB_NAME`) if `DATABASE_URL` is not set.
+### 5. Run the Application
 
-**Option A — Connect to an existing PostgreSQL database (or restored dump):**
-- Point `DATABASE_URL` in `.env.local` to your database (set `DB_SSL=true` if remote).
-- On startup, `server.ts` runs `verifyDatabaseSchema()` (read-only check verifying all 13 required tables and columns exist).
+Start the development server:
 
-**Option B — Brand-new empty local PostgreSQL database:**
-1. Create a database named `deal_tracker` in pgAdmin or `psql`:
-   ```sql
-   CREATE DATABASE deal_tracker;
-   ```
-2. Set `DATABASE_URL` and `DB_SSL=false` in `.env.local`.
-3. Initialize the 13 required tables and baseline categories/stores once:
-   ```powershell
-   npx tsx -e "import dotenv from 'dotenv'; dotenv.config({ path: '.env.local' }); import { initializeDatabase } from './backend/src/config/initDb.ts'; initializeDatabase().then(() => process.exit(0));"
-   ```
-
-### 7. Start the Backend
-Because Gadget Tracker Pro runs a unified Express + Vite server, starting the backend also starts the frontend middleware:
-
-**Development mode:**
-```powershell
+```bash
 npm run dev
 ```
 
-**Production-mode local test:**
-```powershell
+Open:
+
+```text
+http://localhost:3000
+```
+
+The frontend and backend API run through the same server.
+
+### 6. Build for Production
+
+Check TypeScript:
+
+```bash
+npm run lint
+```
+
+Build the application:
+
+```bash
 npm run build
-$env:NODE_ENV="production"
+```
+
+Start the production server:
+
+```bash
 npm start
 ```
-*(In `production` mode, set required env vars in PowerShell or your shell environment since `.env.local` is intentionally not loaded when `NODE_ENV=production`.)*
 
-### 8. Start the Frontend
-- When running `npm run dev`, the React/Vite frontend is automatically served by `server.ts` on **http://localhost:3000** — no separate second terminal is needed.
-- TypeScript verification and build commands:
-  ```powershell
-  npm run lint
-  npm run build
-  ```
+Production environment variables must be configured in the hosting environment.
 
-### 9. Local URLs for Frontend and Backend
-| Service | Local URL |
+## API Endpoints
+
+The backend API uses the `/api` base path.
+
+| Endpoint | Purpose |
 |---|---|
-| Frontend Web App (SPA) | `http://localhost:3000` |
-| Backend REST API Base | `http://localhost:3000/api` |
-| Public Catalogue Endpoint | `http://localhost:3000/api/products` |
-| Health Check Endpoint | `http://localhost:3000/api/health` |
+| `/api/health` | Application health check |
+| `/api/products` | Product catalogue |
 
-### 10. Verify the Health Endpoint
-Open `http://localhost:3000/api/health` in your browser, or run in PowerShell:
-```powershell
-Invoke-RestMethod http://localhost:3000/api/health
-```
-Expected HTTP `200` JSON response:
-```json
-{
-  "status": "success",
-  "message": "Unifed Full-Stack E-Commerce Portal is live and connected!",
-  "timestamp": "..."
-}
-```
+Other endpoints support authentication, watchlists, price alerts, history, dashboard and administration.
 
-### 11. Common Windows Errors and How to Resolve Them
-| Error | Cause | Fix |
-|---|---|---|
-| `CRITICAL SECURITY ERROR: JWT_SECRET environment variable is missing or too short` | `.env.local` missing or `JWT_SECRET` < 32 chars | Create `.env.local` from `.env.example` and set a random 32+ char `JWT_SECRET` |
-| `Database schema readiness check failed: Missing required table(s)` | Connected to an empty PostgreSQL DB | Restore your SQL dump or run the `initializeDatabase()` one-liner in Step 6 |
-| `ECONNREFUSED 127.0.0.1:5432` | Local PostgreSQL service is not running | Open Windows **Services** (`services.msc`) and start `postgresql-x64-*` |
-| `no pg_hba.conf entry ... SSL off` or `self-signed certificate` | Managed Postgres requires SSL | Set `DB_SSL=true` in `.env.local` (and `DB_SSL_REJECT_UNAUTHORIZED=false` only if provider requires it) |
-| `EADDRINUSE: address already in use :::3000` | Another process is using port 3000 | Stop the other process or set `PORT=3001` in `.env.local` |
-| PowerShell `execution policy` error running `npm` / `npx` | Windows script execution policy | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` in PowerShell |
-| Production `npm start` fails with `JWT_SECRET` missing | `NODE_ENV=production` intentionally skips `.env.local` | Export env vars in the shell before `npm start`, or test locally with `npm run dev` |
+## Environment and Security
+
+- Keep credentials in environment variables.
+- Use a strong JWT secret.
+- Use SSL for hosted PostgreSQL connections.
+- Keep email verification disabled unless its email infrastructure is configured.
+- Configure trusted proxy settings according to the hosting platform.
+- Never expose private API keys in frontend code or public repositories.
+
+## Future Improvements
+
+Potential improvements include:
+- Better product search and filtering.
+- More shopping platform integrations.
+- Improved price tracking and notification workflows.
+- Frontend code splitting and performance optimization.
+- Expanded analytics and administrative capabilities.
+
+## License
+
+Add your chosen license here if you intend to distribute the project under an open-source license.
